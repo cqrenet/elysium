@@ -8,20 +8,34 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 0.1                                 ##
+## Version: 1.0                                 ##
 ## Support: support@cqre.net                    ##
 ##################################################
+
+# Current timestamp for both report generation and header
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+
+# Define Header and Footer for the report with dynamic date
+$header = @"
+=========== Elysium Report ==========
+Report Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+=====================================
+
+"@
+$footer = "`r`n==== End of Report ===="
 
 # Import settings
 Write-Host "Loading settings..."
 $ElysiumSettings = @{}
 $settingsPath = "ElysiumSettings.txt"
 
+# Ensure the settings file exists
 if (-not (Test-Path $settingsPath)) {
     Write-Error "Settings file not found at $settingsPath"
-    return
+    exit
 }
 
+# Load settings from file
 Get-Content $settingsPath | ForEach-Object {
     if (-not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith("#")) {
         $keyValue = $_ -split '=', 2
@@ -31,80 +45,54 @@ Get-Content $settingsPath | ForEach-Object {
     }
 }
 
+# Required modules
+$requiredModules = @("DSInternals", "ActiveDirectory")
+
+# Check each required module and import
+foreach ($module in $requiredModules) {
+    if (-not (Get-Module -ListAvailable -Name $module)) {
+        Write-Error "Required module '$module' is not installed. Please install it to proceed."
+        exit
+    }
+    Import-Module $module
+}
+
+# Verify the existence of the Weak Password Hashes file
 $WeakHashesSortedFilePath = Join-Path -Path $ElysiumSettings["InstallationPath"] -ChildPath $ElysiumSettings["WeakPasswordsDatabase"]
 if (-not (Test-Path $WeakHashesSortedFilePath)) {
     Write-Error "Weak password hashes file not found at '$WeakHashesSortedFilePath'."
-    return
+    exit
 }
 
-# Check if required modules are available and install them if necessary
-$requiredModules = @("DSInternals", "ActiveDirectory")
-foreach ($module in $requiredModules) {
-    if (-not (Get-Module -ListAvailable -Name $module)) {
-        $userConsent = Read-Host "Module '$module' is not installed. Do you want to install it now? (Y/N)"
-        if ($userConsent -eq 'Y') {
-            try {
-                Write-Host "Installing module '$module'..."
-                Install-Module -Name $module -Force -Scope CurrentUser
-                Write-Host "Module '$module' installed successfully."
-            } catch {
-                Write-Error "Failed to install module '$module'. Error: $_"
-                return
-            }
-        } else {
-            Write-Host "Skipping module installation. Script may not function correctly without the required modules."
-            return
-        }
-    }
-}
-
-# Import required modules
-Import-Module DSInternals
-Import-Module ActiveDirectory
-
-# Get the variables from settings
-$WeakHashesSortedFilePath = $ElysiumSettings["WeakPasswordsDatabase"]
-# Get the report path from settings
+# Ensure the report directory exists
 $reportPathBase = $ElysiumSettings["ReportPathBase"]
-if ($null -eq $reportPathBase) {
-    Write-Error "Report path is not defined in the settings."
-    return
-}
-
-# Check if the report directory exists, create it if it doesn't
 if (-not (Test-Path -Path $reportPathBase)) {
-    Write-Host "Report directory does not exist. Creating directory at $reportPathBase..."
     New-Item -Path $reportPathBase -ItemType Directory
 }
 
-
-# Function to extract domain details from settings
+# Extract domain details from settings
 function Get-DomainDetailsFromSettings {
     param (
-        [hashtable]$ElysiumSettings
+        [hashtable]$Settings
     )
 
-    Write-Host "Extracting domain details from settings..."
     $domainDetails = @{}
-    $domainCounter = 1
-
+    $counter = 1
     while ($true) {
-        $domainNameKey = "Domain${domainCounter}Name"
-        $domainDCKey = "Domain${domainCounter}DC"
-        $domainDAKey = "Domain${domainCounter}DA"
-
-        if ($ElysiumSettings.ContainsKey($domainNameKey)) {
-            $domainDetails["$domainCounter"] = @{
-                "Name" = $ElysiumSettings[$domainNameKey]
-                "DC"   = $ElysiumSettings[$domainDCKey]
-                "DA"   = $ElysiumSettings[$domainDAKey]
+        $nameKey = "Domain${counter}Name"
+        $dcKey = "Domain${counter}DC"
+        $daKey = "Domain${counter}DA"
+        if ($Settings.ContainsKey($nameKey)) {
+            $domainDetails["$counter"] = @{
+                Name = $Settings[$nameKey]
+                DC   = $Settings[$dcKey]
+                DA   = $Settings[$daKey]
             }
-            $domainCounter++
+            $counter++
         } else {
             break
         }
     }
-
     return $domainDetails
 }
 
@@ -112,26 +100,18 @@ function Get-DomainDetailsFromSettings {
 function Test-WeakADPasswords {
     param (
         [hashtable]$DomainDetails,
-        [string]$WeakHashesSortedFilePath
+        [string]$FilePath
     )
 
-    Write-Host "Starting the test for weak AD passwords..."
-
-    # Display domain options to the user
-    Write-Host "Select a domain to test:"
-    $sortedDomains = $DomainDetails.Keys | Sort-Object
-    foreach ($domain in $sortedDomains) {
-        $domainName = $DomainDetails[$domain].Name
-        Write-Host ($domain + ": " + $domainName)
-    }
-
     # User selects a domain
-    $selectedDomainKey = Read-Host "Enter the number of the domain"
-    $selectedDomain = $DomainDetails[$selectedDomainKey]
+    Write-Host "Select a domain to test:"
+    $DomainDetails.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value.Name)" }
+    $selection = Read-Host "Enter the number of the domain"
+    $selectedDomain = $DomainDetails[$selection]
 
-    if ($null -eq $selectedDomain) {
-        Write-Error "Invalid selection. Exiting."
-        return $null
+    if (-not $selectedDomain) {
+        Write-Error "Invalid selection."
+        return
     }
 
     # Prompt for DA password
@@ -139,69 +119,22 @@ function Test-WeakADPasswords {
     $DApassword = Read-Host "Enter password for DA account ($DAUsername) of $($selectedDomain.Name)" -AsSecureString
 
     # Preparing credentials for the domain
-    $credentials = New-Object System.Management.Automation.PSCredential($selectedDomain.DA, $DApassword)
+    $credentials = New-Object System.Management.Automation.PSCredential ($selectedDomain["DA"], $DApassword)
 
-    Write-Host "Enumerating accounts from the domain controller $($selectedDomain.DC)..."
-    $accounts = Get-ADReplAccount -All -Server $selectedDomain.DC -Credential $credentials
+    # Performing the test
+    Write-Host "Testing password quality for $($selectedDomain.Name)..."
+    $testResults = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credentials |
+                   Test-PasswordQuality -WeakPasswordHashesFile $FilePath -Verbose
 
-    Write-Host "Testing password quality..."
-    $testResults = $accounts | Test-PasswordQuality -WeakPasswordHashesFile $WeakHashesSortedFilePath
-
-    # Debug: Print selected domain details
-    Write-Host "Selected domain details: Name=$($selectedDomain.Name), DC=$($selectedDomain.DC), DA=$($selectedDomain.DA)"
-
-    # Generate report name and path
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $reportName = $selectedDomain.Name + "_WeakPasswordReport_" + $timestamp + ".txt"
-    $reportPath = Join-Path -Path $reportPathBase -ChildPath $reportName
-
-    Write-Host "Report will be saved as: $reportName"
-
-    # Return a hashtable with report path and weak accounts
-    return @{
-        "ReportPath" = $reportPath;
-        "WeakAccounts" = $testResults.WeakPasswords;
-    }
+    # Report generation with dynamic content
+    $reportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_WeakPasswordReport_$timestamp.txt"
+    $reportContent = @($header, ($testResults | Out-String).Trim(), $footer) -join "`r`n"
+    $reportContent | Out-File -FilePath $reportPath
+    Write-Host "Report saved to $reportPath"
 }
 
-# Function to export weak password report
-function Export-WeakPasswordReport {
-    param (
-        [array]$WeakAccounts,
-        [string]$ReportPath
-    )
-
-    Write-Host "Exporting weak password report to $ReportPath"
-
-    # Handle empty weak accounts array
-    if ($null -eq $WeakAccounts -or $WeakAccounts.Count -eq 0) {
-        "No weak passwords found." | Out-File $ReportPath
-    } else {
-        $WeakAccounts | Out-File $ReportPath
-    }
-    
-    Write-Host "Weak password report generated at $ReportPath"
-}
-
-# Main script execution
-try {
-    $domainDetails = Get-DomainDetailsFromSettings -ElysiumSettings $ElysiumSettings
-    $results = Test-WeakADPasswords -DomainDetails $domainDetails -WeakHashesSortedFilePath $WeakHashesSortedFilePath
-
-    # Check if results were returned before proceeding
-    if ($results) {
-        # Generate the report
-        Export-WeakPasswordReport -WeakAccounts $results.WeakAccounts -ReportPath $results.ReportPath
-
-        # Check if there are weak accounts
-        if ($results.WeakAccounts) {
-            Write-Host "Weak passwords found. Report generated at $($results.ReportPath)"
-        } else {
-            Write-Host "No weak passwords found. Empty report generated at $($results.ReportPath)"
-        }
-    }
-} catch {
-    Write-Error "An error occurred: $_"
-}
+# Main script logic
+$domainDetails = Get-DomainDetailsFromSettings -Settings $ElysiumSettings
+Test-WeakADPasswords -DomainDetails $domainDetails -FilePath $WeakHashesSortedFilePath
 
 Write-Host "Script execution completed."
