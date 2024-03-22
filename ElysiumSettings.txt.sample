@@ -1,0 +1,36 @@
+##################################################
+##   ____ ___  ____  _____   _   _ _____ _____  ##
+##  / ___/ _ \|  _ \| ____| | \ | | ____|_   _| ##
+## | |  | | | | |_) |  _|   |  \| |  _|   | |   ##
+## | |__| |_| |  _ <| |___ _| |\  | |___  | |   ##
+##  \____\__\_\_| \_\_____(_)_| \_|_____| |_|   ##
+##          Move fast and fix things.           ##
+##################################################
+## Project: Elysium                             ##
+## File: ElysiumSettings.txt                    ##
+## Version: 1.0                                 ##
+## Support: support@cqre.net                    ##
+##################################################
+
+# KHDB Settings
+###############
+storageAccountName = ''
+containerName = ''
+sasToken = '?'
+
+# Application Settings
+######################
+InstallationPath=
+ReportPathBase=/Reports
+WeakPasswordsDatabase=khdb.txt
+# TODO CheckOnlyEnabledUsers=true
+
+# Domain Settings
+#################
+# Domain 1 (domain1.local)
+Domain1Name=domain1.local
+Domain1DC=xxx.domain1.local
+
+# Domain 2 (domain2.com)
+Domain2Name=domain2.com
+Domain2DC=yyy.domain2.com
