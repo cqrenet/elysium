@@ -1,14 +1,54 @@
+##################################################
+##   ____ ___  ____  _____   _   _ _____ _____  ##
+##  / ___/ _ \|  _ \| ____| | \ | | ____|_   _| ##
+## | |  | | | | |_) |  _|   |  \| |  _|   | |   ##
+## | |__| |_| |  _ <| |___ _| |\  | |___  | |   ##
+##  \____\__\_\_| \_\_____(_)_| \_|_____| |_|   ##
+##################################################
+## Project: Elysium                             ##
+## File: Elysium.ps1                            ##
+## Version: 1.0                                 ##
+## Support: support@cqre.net                    ##
+##################################################
+
 <#
 .SYNOPSIS
 This is the main script for the Elysium tool for testing weak AD passwords.
 
 .DESCRIPTION
 Elysium.ps1 offers a menu to perform various actions:
-1. Update Known-Hashes Database (KHDB)
+1. Download/Update Known-Hashes Database (KHDB)
 2. Test Weak AD Passwords
 3. Extract and Send Current Hashes for KHDB Update
-4. Exit
+4. Uninstall the tool
+5. Exit
 #>
+
+# Define the path to the settings file
+$settingsFilePath = "ElysiumSettings.txt"
+
+# Check if the settings file exists
+if (-Not (Test-Path $settingsFilePath)) {
+    Write-Host "ElysiumSettings.txt does not exist. Please ensure your settings file is in the correct location."
+    exit
+} else {
+    Write-Host "ElysiumSettings.txt found."
+}
+
+# Attempt to retrieve the passphrase from the environment variable
+$passphrase = [System.Environment]::GetEnvironmentVariable("ELYSIUM_PASSPHRASE", [System.EnvironmentVariableTarget]::User)
+
+if ([string]::IsNullOrEmpty($passphrase)) {
+    Write-Host "No passphrase found in environment variables."
+    $passphrase = Read-Host "Please enter your passphrase."
+    # Here you could choose to set the environment variable or simply use the passphrase for the current session
+    [System.Environment]::SetEnvironmentVariable("ELYSIUM_PASSPHRASE", $passphrase, [System.EnvironmentVariableTarget]::User)
+    Write-Host "Passphrase stored as environment variable 'ELYSIUM_PASSPHRASE'."
+} else {
+    Write-Host "Passphrase found in environment variables."
+}
+
+# Continue with the rest of your script...
 
 function Show-Menu {
     param (
@@ -16,19 +56,19 @@ function Show-Menu {
     )
     Clear-Host
     Write-Host "================ $Title ================"
-
-    Write-Host "1: Update Known-Hashes Database (KHDB)"
+    Write-Host "1: Download/Update Known-Hashes Database (KHDB)"
     Write-Host "2: Test Weak AD Passwords"
     Write-Host "3: Extract and Send Current Hashes for KHDB Update"
-    Write-Host "4: Exit"
+    Write-Host "4: Uninstall"
+    Write-Host "5: Exit"
 }
 
 do {
     Show-Menu
-    $input = Read-Host "Please make a selection"
-    switch ($input) {
+    $userSelection = Read-Host "Please make a selection"
+    switch ($userSelection) {
         '1' {
-            Write-Host "Updating KHDB..."
+            Write-Host "Downloading KHDB..."
             .\Update-KHDB.ps1
         }
         '2' {
@@ -37,9 +77,13 @@ do {
         }
         '3' {
             Write-Host "Extracting and Sending Current Hashes..."
-            .\Send-CurrentHashes.ps1
+            .\Extract-NTHashes.ps1
         }
         '4' {
+            Write-Host "Uninstalling..."
+            .\Uninstall.ps1
+        }
+        '5' {
             Write-Host "Exiting..."
             exit
         }
@@ -48,4 +92,4 @@ do {
         }
     }
     pause
-} while ($input -ne '4')
+} while ($userSelection -ne '5')

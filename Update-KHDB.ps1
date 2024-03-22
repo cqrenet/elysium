@@ -1,3 +1,24 @@
+##################################################
+##   ____ ___  ____  _____   _   _ _____ _____  ##
+##  / ___/ _ \|  _ \| ____| | \ | | ____|_   _| ##
+## | |  | | | | |_) |  _|   |  \| |  _|   | |   ##
+## | |__| |_| |  _ <| |___ _| |\  | |___  | |   ##
+##  \____\__\_\_| \_\_____(_)_| \_|_____| |_|   ##
+##################################################
+## Project: Elysium                             ##
+## File: Update-KHDB.ps1                        ##
+## Version: 1.0                                 ##
+## Support: support@cqre.net                    ##
+##################################################
+
+<#
+.SYNOPSIS
+Known hashes database update script for the Elysium AD password testing tool.
+
+.DESCRIPTION
+This script download khdb.txt.zip from designated Azure Stroage account, decompress it and overwrite the current version.
+#>
+
 # Initialize an empty hashtable to store settings
 $ElysiumSettings = @{}
 
@@ -8,55 +29,40 @@ Get-Content $settingsPath | ForEach-Object {
     $ElysiumSettings[$keyValue[0]] = $keyValue[1]
 }
 
-# Get the variables
-$KHDBUrl = $ElysiumSettings["KHDBUrl"]
+# Get variables related to Azure Blob storage
+$AzureBlobStorageUrl = $ElysiumSettings["AzureBlobStorageUrl"] # Ensure this is properly constructed in your settings
 $SecureToken = $ElysiumSettings["SecureToken"]
 
 function Update-KHDB {
-    Write-Host "Checking for KHDB updates..."
+    Write-Host "Downloading KHDB..."
 
     # Setting request headers
     $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
     $headers.Add("Authorization", "Bearer $SecureToken")
 
-    # Downloading KHDB
+    # Downloading KHDB.zip from Azure Blob Storage
+    $khdbZipPath = "khdb.zip"
     try {
-        $latestKHDB = Invoke-WebRequest -Uri $KHDBUrl -Headers $headers -UseBasicParsing
-        $encryptedKHDB = $latestKHDB.Content
-        Write-Host "KHDB downloaded successfully."
+        Invoke-WebRequest -Uri $AzureBlobStorageUrl -Headers $headers -OutFile $khdbZipPath
+        Write-Host "KHDB.zip downloaded successfully."
     } catch {
-        Write-Error "Error downloading KHDB: $_"
+        Write-Error "Error downloading KHDB.zip: $_"
         return
     }
 
-    # Decrypting KHDB
+    # Decompressing KHDB.zip
     try {
-        $decryptionPassword = Read-Host "Enter decryption password" -AsSecureString
-        $decryptedKHDB = Unprotect-KHDB -EncryptedData $encryptedKHDB -Password $decryptionPassword
-        Write-Host "KHDB decrypted successfully."
+        Expand-Archive -Path $khdbZipPath -DestinationPath . -Force
+        Remove-Item -Path $khdbZipPath -Force # Delete the zip file
+        Write-Host "KHDB decompressed and cleaned up successfully."
     } catch {
-        Write-Error "Error decrypting KHDB: $_"
+        Write-Error "Error decompressing KHDB: $_"
         return
     }
-
-    # Updating local KHDB (assuming a specific method to update your local database)
-    Update-LocalKHDB -Data $decryptedKHDB
 }
 
-function Unprotect-KHDB {
-    param (
-        [Parameter(Mandatory = $true)][string]$EncryptedData,
-        [Parameter(Mandatory = $true)][System.Security.SecureString]$Password
-    )
-    # Implement your decryption logic here
-    # Return decrypted data
-}
-
-function Update-LocalKHDB {
-    param (
-        [Parameter(Mandatory = $true)][string]$Data
-    )
-    # Implement your logic to update the local KHDB
-}
+# Run the script
 
 Update-KHDB
+
+Write-Host "Script execution completed."

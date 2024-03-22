@@ -18,11 +18,11 @@ Sensitive operations are confined only to the dedicated host. In the third step,
 ## Operation
 ### Install and update
 This tool is provided in private git repository. Installation and updating is done with cloning and pulling from this repository.
+During first run, the tool will ask for passphrase that will be used to encrypt/decrypt sensitive content.
+After installation, edit ElysiumSettings.txt, check all variables and add domains to test.
 ### Update Known-Hashed Database (KHDB)
 Run script Elysium.ps1 as an administrator and choose option 1 (Update Known-Hashes Database).
-The script will then check online for newer version and if found, downloads it.
-As the KHDB content is encrypted, the script will then ask for decryption pasword.
-With correct password provided, database is then updated.
+The script will then download the database from dedicated Azure Storage, decompresses it and updates the current database.
 ### Test Weak AD passwords
 Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Passwords).
 The script will then ask for the domain to be tested and upon choice will ask for domain administrator password. The DA username is already provided in the script for each domain.
@@ -31,7 +31,8 @@ The tool then connects to Domain Controller and tests all enabled users in the d
 Run script Elysium.ps1 as an administrator and choose option 3 (Extract and Send Hashes).
 The tool will then ask for domain and password of domain administrator. With correct credentials, the tool will then extract current hashes (no history) of non-disabled users, compresses and encrypts them and sends them to the tool provider.
 ### Uninstallation
-Remove the cloned repository.
+Run script Elysium.ps1 as an administrator and choose option 4 (Uninstall).
+The script will then delete everything and remove the passphrase variable.
 ---
 ## FAQ
 ### What happens to the hashes we uploaded?

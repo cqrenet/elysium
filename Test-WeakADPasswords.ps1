@@ -12,6 +12,14 @@
 ## Support: support@cqre.net                    ##
 ##################################################
 
+<#
+.SYNOPSIS
+Weak AD password finder component of Elysium tool.
+
+.DESCRIPTION
+This script will test the passwords of selected domain (defined in ElysiumSettings.txt) using DSInternal Test-PasswordQuality cmdlet. It writes it's output to a report file which is meant to be shared with internal security team.
+#>
+
 # Current timestamp for both report generation and header
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 
@@ -89,7 +97,8 @@ function Get-DomainDetailsFromSettings {
                 DA   = $Settings[$daKey]
             }
             $counter++
-        } else {
+        }
+        else {
             break
         }
     }
@@ -124,7 +133,7 @@ function Test-WeakADPasswords {
     # Performing the test
     Write-Host "Testing password quality for $($selectedDomain.Name)..."
     $testResults = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credentials |
-                   Test-PasswordQuality -WeakPasswordHashesFile $FilePath -Verbose
+    Test-PasswordQuality -WeakPasswordHashesFile $FilePath -Verbose
 
     # Report generation with dynamic content
     $reportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_WeakPasswordReport_$timestamp.txt"
