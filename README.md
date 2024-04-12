@@ -35,6 +35,7 @@ Run script Elysium.ps1 as an administrator and choose option 4 (Uninstall).
 The script will then delete everything and remove the passphrase variable.
 ---
 ## FAQ
+
 ### What happens to the hashes we uploaded?
 These hashes are subjected to cracking. Any cracked hash is then added to KHDB. Hash cracking happens on dedicated air-gapped machine and all sensitive material is never decrypted outside this machine. Secure exchange of decryption keys is arranged beforehand with every client.
 ### Do we need to upload the hashes?
