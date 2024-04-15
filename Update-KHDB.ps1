@@ -16,7 +16,7 @@
 Known hashes database update script for the Elysium AD password testing tool.
 
 .DESCRIPTION
-This script download khdb.txt.zip from designated Azure Stroage account, decompress it and overwrite the current version.
+This script downloads khdb.txt.zip from the designated Azure Storage account, decompresses it, and overwrites the current version.
 #>
 
 # Initialize an empty hashtable to store settings
@@ -25,11 +25,23 @@ $ElysiumSettings = @{}
 # Read the settings file
 $settingsPath = "ElysiumSettings.txt"
 Get-Content $settingsPath | ForEach-Object {
-    $keyValue = $_ -split '=', 2
-    $ElysiumSettings[$keyValue[0]] = $keyValue[1]
+    if ($_ -notmatch '^#' -and $_.Trim()) {
+        $keyValue = $_.Split('=', 2)
+        $key = $keyValue[0].Trim()
+        $value = $keyValue[1].Trim().Trim("'")
+        $ElysiumSettings[$key] = $value
+    }
 }
 
-# Construct Azure Blob Storage URL
+# Verify that all required settings have been loaded
+if (-not $ElysiumSettings.ContainsKey("storageAccountName") -or
+    -not $ElysiumSettings.ContainsKey("containerName") -or
+    -not $ElysiumSettings.ContainsKey("sasToken")) {
+    Write-Error "Missing required settings. Please check your settings file."
+    return
+}
+
+# Construct the full URL for accessing the Azure Blob Storage
 $storageAccountName = $ElysiumSettings["storageAccountName"]
 $containerName = $ElysiumSettings["containerName"]
 $sasToken = $ElysiumSettings["sasToken"]
@@ -38,24 +50,43 @@ $AzureBlobStorageUrl = "https://$storageAccountName.blob.core.windows.net/$conta
 function Update-KHDB {
     Write-Host "Downloading KHDB..."
 
-    # Setting request headers
-    $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
-    $headers.Add("Authorization", "Bearer $SecureToken")
+    # Initialize the client for downloading the file
+    $httpClient = New-Object System.Net.Http.HttpClient
 
-    # Downloading KHDB.zip from Azure Blob Storage
-    $khdbZipPath = "khdb.zip"
     try {
-        Invoke-WebRequest -Uri $AzureBlobStorageUrl -Headers $headers -OutFile $khdbZipPath
-        Write-Host "KHDB.zip downloaded successfully."
+        # Start the asynchronous request to download the file
+        $response = $httpClient.GetAsync($AzureBlobStorageUrl, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+
+        if ($response.IsSuccessStatusCode) {
+            $totalBytes = $response.Content.Headers.ContentLength
+            $totalRead = 0
+            $read = 0
+            $buffer = New-Object byte[] 8192
+            $stream = $response.Content.ReadAsStreamAsync().Result
+            $fileStream = [System.IO.File]::Create("khdb.txt.zip")
+
+            # Read the stream in chunks and update the progress bar
+            while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $fileStream.Write($buffer, 0, $read)
+                $totalRead += $read
+                $percentage = ($totalRead * 100) / $totalBytes
+                Write-Progress -Activity "Downloading khdb.txt.zip" -Status "$([Math]::Round($percentage, 2))% Complete:" -PercentComplete $percentage
+            }
+
+            $fileStream.Close()
+            Write-Host "KHDB.zip downloaded successfully."
+        } else {
+            Write-Error "Failed to download khdb.txt.zip: $($response.StatusCode)"
+        }
     } catch {
-        Write-Error "Error downloading KHDB.zip: $_"
+        Write-Error "Error during download: $_"
         return
     }
 
     # Decompressing KHDB.zip
     try {
-        Expand-Archive -Path $khdbZipPath -DestinationPath . -Force
-        Remove-Item -Path $khdbZipPath -Force # Delete the zip file
+        Expand-Archive -Path "khdb.txt.zip" -DestinationPath . -Force
+        Remove-Item -Path "khdb.txt.zip" -Force # Delete the zip file after extraction
         Write-Host "KHDB decompressed and cleaned up successfully."
     } catch {
         Write-Error "Error decompressing KHDB: $_"
@@ -63,8 +94,6 @@ function Update-KHDB {
     }
 }
 
-# Run the script
-
+# Execute the update function
 Update-KHDB
-
 Write-Host "Script execution completed."
