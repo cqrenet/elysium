@@ -17,7 +17,7 @@
 Weak AD password finder component of Elysium tool.
 
 .DESCRIPTION
-This script will test the passwords of selected domain (defined in ElysiumSettings.txt) using DSInternal Test-PasswordQuality cmdlet. It writes its output to a report file which is meant to be shared with internal security team.
+This script will test the passwords of selected domain (defined in ElysiumSettings.txt) using DSInternals' Test-PasswordQuality cmdlet. It writes its output to a report file which is meant to be shared with the internal security team.
 #>
 
 # Current timestamp for both report generation and header
@@ -53,6 +53,34 @@ Get-Content $settingsPath | ForEach-Object {
     }
 }
 
+# Define the function to extract domain details from settings
+function Get-DomainDetailsFromSettings {
+    param (
+        [hashtable]$Settings
+    )
+
+    $domainDetails = @{}
+    $counter = 1
+    while ($true) {
+        $nameKey = "Domain${counter}Name"
+        $dcKey = "Domain${counter}DC"
+        if ($Settings.ContainsKey($nameKey)) {
+            $domainDetails["$counter"] = @{
+                Name = $Settings[$nameKey]
+                DC   = $Settings[$dcKey]
+            }
+            $counter++
+        }
+        else {
+            break
+        }
+    }
+    return $domainDetails
+}
+
+# Continue with script logic...
+$domainDetails = Get-DomainDetailsFromSettings -Settings $ElysiumSettings
+
 # Required modules
 $requiredModules = @("DSInternals", "ActiveDirectory")
 
@@ -78,9 +106,6 @@ if (-not (Test-Path -Path $reportPathBase)) {
     New-Item -Path $reportPathBase -ItemType Directory
 }
 
-# Extract domain details from settings
-$domainDetails = Get-DomainDetailsFromSettings -Settings $ElysiumSettings
-
 # Function to test for weak AD passwords
 function Test-WeakADPasswords {
     param (
@@ -105,7 +130,7 @@ function Test-WeakADPasswords {
     # Performing the test
     Write-Host "Testing password quality for $($selectedDomain.Name)..."
     $testResults = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credential |
-    Test-PasswordQuality -WeakPasswordHashesFile $FilePath -Verbose
+    Test-PasswordQuality -WeakPasswordHashesFile $FilePath
 
     # Report generation with dynamic content
     $reportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_WeakPasswordReport_$timestamp.txt"
