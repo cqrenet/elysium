@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Extract-NTLMHashes.ps1                 ##
-## Version: 1.0                                 ##
+## Version: 1.0.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
