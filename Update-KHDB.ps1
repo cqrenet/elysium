@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Update-KHDB.ps1                        ##
-## Version: 1.0                                 ##
+## Version: 1.0.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -29,9 +29,11 @@ Get-Content $settingsPath | ForEach-Object {
     $ElysiumSettings[$keyValue[0]] = $keyValue[1]
 }
 
-# Get variables related to Azure Blob storage
-$AzureBlobStorageUrl = $ElysiumSettings["AzureBlobStorageUrl"] # Ensure this is properly constructed in your settings
-$SecureToken = $ElysiumSettings["SecureToken"]
+# Construct Azure Blob Storage URL
+$storageAccountName = $ElysiumSettings["storageAccountName"]
+$containerName = $ElysiumSettings["containerName"]
+$sasToken = $ElysiumSettings["sasToken"]
+$AzureBlobStorageUrl = "https://$storageAccountName.blob.core.windows.net/$containerName/khdb.txt.zip$sasToken"
 
 function Update-KHDB {
     Write-Host "Downloading KHDB..."
