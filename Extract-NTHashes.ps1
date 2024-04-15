@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Extract-NTLMHashes.ps1                 ##
-## Version: 1.0.0                               ##
+## Version: 1.0.2                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -179,7 +179,7 @@ Write-Host "File has been encrypted: $encryptedFilePath"
 $localFileChecksum = Get-FileChecksum -Path $encryptedFilePath
 
 # Create the context for Azure Blob Storage with SAS token
-$storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sasToken
+$storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken "$sasToken"
 
 # Upload the encrypted file to Azure Blob Storage
 Set-AzStorageBlobContent -File $encryptedFilePath -Container $containerName -Blob $blobName -Context $storageContext
