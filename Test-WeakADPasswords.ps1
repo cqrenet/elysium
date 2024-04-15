@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.0                                 ##
+## Version: 1.0.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -17,7 +17,7 @@
 Weak AD password finder component of Elysium tool.
 
 .DESCRIPTION
-This script will test the passwords of selected domain (defined in ElysiumSettings.txt) using DSInternal Test-PasswordQuality cmdlet. It writes it's output to a report file which is meant to be shared with internal security team.
+This script will test the passwords of selected domain (defined in ElysiumSettings.txt) using DSInternal Test-PasswordQuality cmdlet. It writes its output to a report file which is meant to be shared with internal security team.
 #>
 
 # Current timestamp for both report generation and header
@@ -48,7 +48,7 @@ Get-Content $settingsPath | ForEach-Object {
     if (-not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith("#")) {
         $keyValue = $_ -split '=', 2
         if ($keyValue.Count -eq 2) {
-            $ElysiumSettings[$keyValue[0]] = $keyValue[1]
+            $ElysiumSettings[$keyValue[0].Trim()] = $keyValue[1].Trim()
         }
     }
 }
@@ -79,31 +79,7 @@ if (-not (Test-Path -Path $reportPathBase)) {
 }
 
 # Extract domain details from settings
-function Get-DomainDetailsFromSettings {
-    param (
-        [hashtable]$Settings
-    )
-
-    $domainDetails = @{}
-    $counter = 1
-    while ($true) {
-        $nameKey = "Domain${counter}Name"
-        $dcKey = "Domain${counter}DC"
-        $daKey = "Domain${counter}DA"
-        if ($Settings.ContainsKey($nameKey)) {
-            $domainDetails["$counter"] = @{
-                Name = $Settings[$nameKey]
-                DC   = $Settings[$dcKey]
-                DA   = $Settings[$daKey]
-            }
-            $counter++
-        }
-        else {
-            break
-        }
-    }
-    return $domainDetails
-}
+$domainDetails = Get-DomainDetailsFromSettings -Settings $ElysiumSettings
 
 # Function to test for weak AD passwords
 function Test-WeakADPasswords {
@@ -123,16 +99,12 @@ function Test-WeakADPasswords {
         return
     }
 
-    # Prompt for DA password
-    $DAUsername = $selectedDomain["DA"]
-    $DApassword = Read-Host "Enter password for DA account ($DAUsername) of $($selectedDomain.Name)" -AsSecureString
-
-    # Preparing credentials for the domain
-    $credentials = New-Object System.Management.Automation.PSCredential ($selectedDomain["DA"], $DApassword)
+    # Prompt for DA credentials
+    $credential = Get-Credential -Message "Enter AD credentials with replication rights for $($selectedDomain.Name)"
 
     # Performing the test
     Write-Host "Testing password quality for $($selectedDomain.Name)..."
-    $testResults = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credentials |
+    $testResults = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credential |
     Test-PasswordQuality -WeakPasswordHashesFile $FilePath -Verbose
 
     # Report generation with dynamic content
@@ -143,7 +115,6 @@ function Test-WeakADPasswords {
 }
 
 # Main script logic
-$domainDetails = Get-DomainDetailsFromSettings -Settings $ElysiumSettings
 Test-WeakADPasswords -DomainDetails $domainDetails -FilePath $WeakHashesSortedFilePath
 
 Write-Host "Script execution completed."
