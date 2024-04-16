@@ -47,6 +47,8 @@ $containerName = $ElysiumSettings["containerName"]
 $sasToken = $ElysiumSettings["sasToken"]
 $AzureBlobStorageUrl = "https://$storageAccountName.blob.core.windows.net/$containerName/khdb.txt.zip$sasToken"
 
+# Load necessary .NET assembly for HTTP operations
+Add-Type -AssemblyName System.Net.Http
 function Update-KHDB {
     Write-Host "Downloading KHDB..."
 
