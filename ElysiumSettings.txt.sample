@@ -14,9 +14,9 @@
 
 # KHDB Settings
 ###############
-storageAccountName = ''
-containerName = ''
-sasToken = '?'
+storageAccountName = 
+containerName = 
+sasToken = 
 
 # Application Settings
 ######################
