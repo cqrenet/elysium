@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.1.0                               ##
+## Version: 1.1.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -146,12 +146,29 @@ function Get-UserUPN {
     
     Write-Verbose "Attempting to get UPN for $SamAccountName in domain $Domain"
     try {
-        $user = Get-ADUser -Identity $SamAccountName -Properties UserPrincipalName -Server $Domain -Credential $Credential
+        # Remove domain prefix if exists
+        $simplifiedSamAccountName = $SamAccountName -replace '^.*\\', ''
+        
+        $user = Get-ADUser -Identity $simplifiedSamAccountName -Properties UserPrincipalName -Server $Domain -Credential $Credential
         Write-Verbose "UPN found: $($user.UserPrincipalName)"
         return $user.UserPrincipalName
     } catch {
         Write-Verbose ("Failed to get UPN for {0}: {1}" -f $SamAccountName, $_.Exception.Message)
         return "UPN not found"
+    }
+}
+
+# Inside the foreach loop where accounts are processed:
+
+foreach ($line in $lines) {
+    $newReportContent += $line
+
+    # Regex to match the SAMAccountName from the report line
+    if ($line -match "^\s*(\S+)\s*$") {
+        $samAccountName = $matches[1]
+        Write-Verbose "Looking up UPN for $samAccountName"
+        $upn = Get-UserUPN -SamAccountName $samAccountName -Domain $selectedDomain.DC -Credential $credential
+        $newReportContent += "    UPN: $upn"
     }
 }
 
@@ -191,28 +208,54 @@ function Test-WeakADPasswords {
 
     # Report generation with dynamic content and UPNs
     $reportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_WeakPasswordReport_$timestamp.txt"
+    $upnOnlyReportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_DictionaryPasswordUPNs_$timestamp.txt"
+    
     Write-Verbose "Generating report at $reportPath"
     $reportContent = @($header, ($testResults | Out-String).Trim(), $footer) -join "`r`n"
     
     $lines = $reportContent -split "`r`n"
     $newReportContent = @()
+    $upnReportContent = @()
+
+    $collectingUPNs = $false
 
     foreach ($line in $lines) {
         $newReportContent += $line
         
-        if ($line -match "$($selectedDomain.Name)\\(.+)") {
+        # Start collecting UPNs after detecting the relevant section in the report
+        if ($line -match "Passwords of these accounts have been found in the dictionary:") {
+            $collectingUPNs = $true
+            continue
+        }
+
+        # Stop collecting UPNs if a new section starts or end of section is detected
+        if ($collectingUPNs -and $line -match "^\s*$") {
+            $collectingUPNs = $false
+        }
+
+        # Regex to match the SAMAccountName from the report line and collect UPNs if in the target section
+        if ($collectingUPNs -and $line -match "^\s*(\S+)\s*$") {
             $samAccountName = $matches[1]
             Write-Verbose "Looking up UPN for $samAccountName"
             $upn = Get-UserUPN -SamAccountName $samAccountName -Domain $selectedDomain.DC -Credential $credential
             $newReportContent += "    UPN: $upn"
+
+            # Collect UPNs only for accounts found in the dictionary section
+            if ($upn -ne "UPN not found") {
+                $upnReportContent += $upn
+            }
         }
     }
 
     $updatedReportContent = $newReportContent -join "`r`n"
+    $upnOnlyContent = $upnReportContent -join "`r`n"
 
     try {
         $updatedReportContent | Out-File -FilePath $reportPath -ErrorAction Stop
         Write-Host "Report saved to $reportPath"
+
+        $upnOnlyContent | Out-File -FilePath $upnOnlyReportPath -ErrorAction Stop
+        Write-Host "UPN-only report saved to $upnOnlyReportPath"
     } catch {
         Write-Error ("Failed to save report: {0}" -f $_.Exception.Message)
     }
