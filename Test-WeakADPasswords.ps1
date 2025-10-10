@@ -8,11 +8,12 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.1.1                               ##
+## Version: 1.3.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
 <#
+#Requires -Modules DSInternals, ActiveDirectory
 .SYNOPSIS
 Weak AD password finder component of Elysium tool.
 
@@ -21,7 +22,26 @@ This script will test the passwords of selected domain (defined in ElysiumSettin
 #>
 
 # Enable verbose output
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 $VerbosePreference = "Continue"
+
+$scriptRoot = $PSScriptRoot
+
+function Start-TestTranscript {
+    param([string]$BasePath)
+    try {
+        $logsDir = Join-Path -Path $BasePath -ChildPath 'Reports/logs'
+        if (-not (Test-Path $logsDir)) { New-Item -Path $logsDir -ItemType Directory -Force | Out-Null }
+        $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $logPath = Join-Path -Path $logsDir -ChildPath "test-weakad-$ts.log"
+        Start-Transcript -Path $logPath -Force | Out-Null
+    } catch {
+        Write-Warning "Could not start transcript: $($_.Exception.Message)"
+    }
+}
+
+function Stop-TestTranscript { try { Stop-Transcript | Out-Null } catch {} }
 
 # Current timestamp for both report generation and header
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -35,32 +55,34 @@ Report Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 "@
 $footer = "`r`n==== End of Report ===="
 
-# Import settings
-Write-Verbose "Loading settings..."
-$ElysiumSettings = @{}
-$settingsPath = "ElysiumSettings.txt"
-
-# Ensure the settings file exists
-if (-not (Test-Path $settingsPath)) {
-    Write-Error "Settings file not found at $settingsPath"
-    exit
-}
-
-# Load settings from file
+Start-TestTranscript -BasePath $scriptRoot
 try {
-    Get-Content $settingsPath | ForEach-Object {
-        if (-not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith("#")) {
-            $keyValue = $_ -split '=', 2
-            if ($keyValue.Count -eq 2) {
-                $ElysiumSettings[$keyValue[0].Trim()] = $keyValue[1].Trim()
+    # Import settings
+    Write-Verbose "Loading settings..."
+    $ElysiumSettings = @{}
+    $settingsPath = Join-Path -Path $scriptRoot -ChildPath "ElysiumSettings.txt"
+
+    # Ensure the settings file exists
+    if (-not (Test-Path $settingsPath)) {
+        Write-Error "Settings file not found at $settingsPath"
+        exit
+    }
+
+    # Load settings from file
+    try {
+        Get-Content $settingsPath | ForEach-Object {
+            if (-not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith("#")) {
+                $keyValue = $_ -split '=', 2
+                if ($keyValue.Count -eq 2) {
+                    $ElysiumSettings[$keyValue[0].Trim()] = $keyValue[1].Trim()
+                }
             }
         }
+        Write-Verbose "Settings loaded successfully."
+    } catch {
+        Write-Error ("An error occurred while loading settings: {0}" -f $_.Exception.Message)
+        exit
     }
-    Write-Verbose "Settings loaded successfully."
-} catch {
-    Write-Error ("An error occurred while loading settings: {0}" -f $_.Exception.Message)
-    exit
-}
 
 # Define the function to extract domain details from settings
 function Get-DomainDetailsFromSettings {
@@ -91,49 +113,39 @@ function Get-DomainDetailsFromSettings {
 $domainDetails = Get-DomainDetailsFromSettings -Settings $ElysiumSettings
 Write-Verbose ("Domain details extracted: {0}" -f ($domainDetails | ConvertTo-Json))
 
-# Required modules
-$requiredModules = @("DSInternals", "ActiveDirectory")
+# Modules are required via #Requires; PowerShell will stop early if missing.
 
-# Check each required module and import
-foreach ($module in $requiredModules) {
-    if (-not (Get-Module -ListAvailable -Name $module)) {
-        Write-Verbose "Required module '$module' is not installed."
-        $response = Read-Host "Would you like to install it? (Y/N)"
-        if ($response -eq 'Y') {
-            try {
-                Install-Module -Name $module -Force -ErrorAction Stop
-                Write-Verbose "Module '$module' installed successfully."
-            } catch {
-                Write-Error ("Failed to install module '{0}': {1}" -f $module, $_.Exception.Message)
-                exit
-            }
-        } else {
-            Write-Error "Required module '$module' is not installed. Please install it to proceed."
-            exit
-        }
-    }
-    Import-Module $module
-    Write-Verbose "Module '$module' imported."
-}
+# Resolve KHDB path with fallbacks
+$installationPath = $ElysiumSettings["InstallationPath"]
+if ([string]::IsNullOrWhiteSpace($installationPath)) { $installationPath = $scriptRoot }
+elseif (-not [System.IO.Path]::IsPathRooted($installationPath)) { $installationPath = Join-Path -Path $scriptRoot -ChildPath $installationPath }
 
-# Verify the existence of the Weak Password Hashes file
-$WeakHashesSortedFilePath = Join-Path -Path $ElysiumSettings["InstallationPath"] -ChildPath $ElysiumSettings["WeakPasswordsDatabase"]
+$khdbName = if ([string]::IsNullOrWhiteSpace($ElysiumSettings["WeakPasswordsDatabase"])) { 'khdb.txt' } else { $ElysiumSettings["WeakPasswordsDatabase"] }
+$WeakHashesSortedFilePath = Join-Path -Path $installationPath -ChildPath $khdbName
 if (-not (Test-Path $WeakHashesSortedFilePath)) {
     Write-Error "Weak password hashes file not found at '$WeakHashesSortedFilePath'."
     exit
 }
 Write-Verbose "Weak password hashes file found at '$WeakHashesSortedFilePath'."
 
-# Ensure the report directory exists
+# Ensure the report directory exists (relative paths resolved against script root)
 $reportPathBase = $ElysiumSettings["ReportPathBase"]
+if ([string]::IsNullOrWhiteSpace($reportPathBase)) { $reportPathBase = 'Reports' }
+if (-not [System.IO.Path]::IsPathRooted($reportPathBase)) { $reportPathBase = Join-Path -Path $scriptRoot -ChildPath $reportPathBase }
 if (-not (Test-Path -Path $reportPathBase)) {
     try {
-        New-Item -Path $reportPathBase -ItemType Directory -ErrorAction Stop
+        New-Item -Path $reportPathBase -ItemType Directory -ErrorAction Stop | Out-Null
         Write-Verbose "Report directory created at '$reportPathBase'."
     } catch {
         Write-Error ("Failed to create report directory: {0}" -f $_.Exception.Message)
         exit
     }
+}
+
+# Read filtering flag (defaults to false)
+$checkOnlyEnabledUsers = $false
+if ($ElysiumSettings.ContainsKey('CheckOnlyEnabledUsers')) {
+    try { $checkOnlyEnabledUsers = [System.Convert]::ToBoolean($ElysiumSettings['CheckOnlyEnabledUsers']) } catch { $checkOnlyEnabledUsers = $false }
 }
 
 # Function to get UPN for a given SAM account name
@@ -158,25 +170,14 @@ function Get-UserUPN {
     }
 }
 
-# Inside the foreach loop where accounts are processed:
-
-foreach ($line in $lines) {
-    $newReportContent += $line
-
-    # Regex to match the SAMAccountName from the report line
-    if ($line -match "^\s*(\S+)\s*$") {
-        $samAccountName = $matches[1]
-        Write-Verbose "Looking up UPN for $samAccountName"
-        $upn = Get-UserUPN -SamAccountName $samAccountName -Domain $selectedDomain.DC -Credential $credential
-        $newReportContent += "    UPN: $upn"
-    }
-}
+# (removed stray top-level loop; UPN enrichment happens during report generation below)
 
 # Function to test for weak AD passwords
 function Test-WeakADPasswords {
     param (
         [hashtable]$DomainDetails,
-        [string]$FilePath
+        [string]$FilePath,
+        [bool]$CheckOnlyEnabledUsers = $false
     )
 
     # User selects a domain
@@ -198,8 +199,15 @@ function Test-WeakADPasswords {
     # Performing the test
     Write-Verbose "Testing password quality for $($selectedDomain.Name)..."
     try {
-        $testResults = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credential |
-        Test-PasswordQuality -WeakPasswordHashesFile $FilePath
+        $accounts = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credential
+        if ($CheckOnlyEnabledUsers) {
+            Write-Verbose "Filtering to only enabled users per settings."
+            # Prefer property 'Enabled' if present, fall back gracefully if not
+            $accounts = $accounts | Where-Object {
+                if ($_.PSObject.Properties.Name -contains 'Enabled') { $_.Enabled } else { $true }
+            }
+        }
+        $testResults = $accounts | Test-PasswordQuality -WeakPasswordHashesFile $FilePath
         Write-Verbose "Password quality test completed."
     } catch {
         Write-Error ("An error occurred while testing passwords: {0}" -f $_.Exception.Message)
@@ -262,11 +270,12 @@ function Test-WeakADPasswords {
 }
 
 # Main script logic
-try {
     Write-Verbose "Starting main script execution..."
-    Test-WeakADPasswords -DomainDetails $domainDetails -FilePath $WeakHashesSortedFilePath
+    Test-WeakADPasswords -DomainDetails $domainDetails -FilePath $WeakHashesSortedFilePath -CheckOnlyEnabledUsers:$checkOnlyEnabledUsers
 } catch {
     Write-Error ("An error occurred during script execution: {0}" -f $_.Exception.Message)
+} finally {
+    Stop-TestTranscript
 }
 
 Write-Host "Script execution completed."

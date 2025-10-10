@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Elysium.ps1                            ##
-## Version: 1.0                                 ##
+## Version: 1.1.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -24,8 +24,12 @@ Elysium.ps1 offers a menu to perform various actions:
 5. Exit
 #>
 
+# Safer defaults
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
 # Define the path to the settings file
-$settingsFilePath = "ElysiumSettings.txt"
+$settingsFilePath = Join-Path -Path $PSScriptRoot -ChildPath "ElysiumSettings.txt"
 
 # Check if the settings file exists
 if (-Not (Test-Path $settingsFilePath)) {
@@ -69,19 +73,19 @@ do {
     switch ($userSelection) {
         '1' {
             Write-Host "Downloading KHDB..."
-            .\Update-KHDB.ps1
+            & (Join-Path -Path $PSScriptRoot -ChildPath 'Update-KHDB.ps1')
         }
         '2' {
             Write-Host "Testing Weak AD Passwords..."
-            .\Test-WeakADPasswords.ps1
+            & (Join-Path -Path $PSScriptRoot -ChildPath 'Test-WeakADPasswords.ps1')
         }
         '3' {
             Write-Host "Extracting and Sending Current Hashes..."
-            .\Extract-NTHashes.ps1
+            & (Join-Path -Path $PSScriptRoot -ChildPath 'Extract-NTHashes.ps1')
         }
         '4' {
             Write-Host "Uninstalling..."
-            .\Uninstall.ps1
+            & (Join-Path -Path $PSScriptRoot -ChildPath 'Uninstall.ps1')
         }
         '5' {
             Write-Host "Exiting..."

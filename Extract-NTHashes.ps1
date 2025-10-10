@@ -7,11 +7,12 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Extract-NTLMHashes.ps1                 ##
-## Version: 1.0.2                               ##
+## Version: 1.2.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
 <#
+#Requires -Modules DSInternals, Az.Storage
 .SYNOPSIS
 Script for extracting NTLM hashes from live AD for further analysis.
 
@@ -19,10 +20,31 @@ Script for extracting NTLM hashes from live AD for further analysis.
 This script will connect to selected domain (defined in ElysiumSettings.txt) using account with AD replication privileges and extract NTLM hashes from all active accounts. It will then compress and encrypt the resulting file, uploads it to designated Azure Storage account, checks for validity and then deletes everything. The hashes are extracted without usernames to minimise the sensitivity of the operation. Encryption is done with AES and passphrase that was defined in environment variable during first run.
 #>
 
-# Import settings
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$scriptRoot = $PSScriptRoot
+
+function Start-ExtractTranscript {
+    param([string]$BasePath)
+    try {
+        $logsDir = Join-Path -Path $BasePath -ChildPath 'Reports/logs'
+        if (-not (Test-Path $logsDir)) { New-Item -Path $logsDir -ItemType Directory -Force | Out-Null }
+        $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $logPath = Join-Path -Path $logsDir -ChildPath "extract-hashes-$ts.log"
+        Start-Transcript -Path $logPath -Force | Out-Null
+    } catch {
+        Write-Warning "Could not start transcript: $($_.Exception.Message)"
+    }
+}
+
+function Stop-ExtractTranscript { try { Stop-Transcript | Out-Null } catch {} }
+
+Start-ExtractTranscript -BasePath $scriptRoot
+try {
+    # Import settings
 Write-Host "Loading settings..."
 $ElysiumSettings = @{}
-$settingsPath = "ElysiumSettings.txt"
+$settingsPath = Join-Path -Path $scriptRoot -ChildPath "ElysiumSettings.txt"
 
 if (-not (Test-Path $settingsPath)) {
     Write-Error "Settings file not found at $settingsPath"
@@ -38,17 +60,12 @@ Get-Content $settingsPath | ForEach-Object {
     }
 }
 
-# Ensure DSInternals and Az.Storage are installed
-$requiredModules = @('DSInternals', 'Az.Storage')
-foreach ($module in $requiredModules) {
-    if (-not (Get-Module -ListAvailable -Name $module)) {
-        Write-Host "Installing $module module..."
-        Install-Module $module -Scope CurrentUser -Force
-    }
-    Import-Module $module
+function Normalize-ReportPath([string]$p) {
+    if ([string]::IsNullOrWhiteSpace($p)) { return (Join-Path -Path $scriptRoot -ChildPath 'Reports') }
+    if ([System.IO.Path]::IsPathRooted($p)) { return $p }
+    return (Join-Path -Path $scriptRoot -ChildPath $p)
 }
 
-# Script variables
 # External settings
 $storageAccountName = $ElysiumSettings['storageAccountName']
 $containerName = $ElysiumSettings['containerName']
@@ -56,14 +73,10 @@ $sasToken = $ElysiumSettings['sasToken']
 
 # Retrieve the passphrase from a user environment variable
 $passphrase = [System.Environment]::GetEnvironmentVariable("ELYSIUM_PASSPHRASE", [System.EnvironmentVariableTarget]::User)
+if ([string]::IsNullOrWhiteSpace($passphrase)) { Write-Error 'Passphrase not found in ELYSIUM_PASSPHRASE environment variable.'; exit }
 
-# Dynamic variables
+# Timestamp
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$domainPrefix = $selectedDomain.Name -replace "\W", "_" # Replace non-alphanumeric characters to ensure a valid file name
-$exportPath = ".\${domainPrefix}_NTLM_Hashes_$timestamp.txt"
-$compressedFilePath = ".\${domainPrefix}_NTLM_Hashes_$timestamp.zip"
-$encryptedFilePath = ".\${domainPrefix}_NTLM_Hashes_$timestamp.enc"
-$blobName = "${domainPrefix}_NTLM_Hashes_$timestamp.enc"
 
 function Protect-FileWithAES {
     param (
@@ -77,41 +90,49 @@ function Protect-FileWithAES {
         [string]$Passphrase
     )
 
-    $aes = New-Object System.Security.Cryptography.AesManaged
+    # Derive key with PBKDF2 (HMACSHA256) + random salt
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $salt = New-Object byte[] 16
+    $rng.GetBytes($salt)
+
+    $kdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Passphrase, $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+    $key = $kdf.GetBytes(32)
+
+    $aes = [System.Security.Cryptography.Aes]::Create()
     $aes.KeySize = 256
     $aes.BlockSize = 128
     $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-
-    # Generate key from passphrase
-    $passwordBytes = [System.Text.Encoding]::UTF8.GetBytes($Passphrase)
-    $aes.Key = [System.Security.Cryptography.SHA256]::Create().ComputeHash($passwordBytes)
-
-    # Generate a random IV
+    $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
     $aes.GenerateIV()
 
-    $encryptor = $aes.CreateEncryptor($aes.Key, $aes.IV)
+    $iv = $aes.IV
+    $encryptor = $aes.CreateEncryptor($key, $iv)
 
-    $fileStream = [System.IO.File]::Open($InputFile, [System.IO.FileMode]::Open)
+    $fileStream = [System.IO.File]::Open($InputFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read)
     $outFileStream = [System.IO.File]::Create($OutputFile)
-    # Write the IV at the beginning of the output file
-    $outFileStream.Write($aes.IV, 0, $aes.IV.Length)
-
-    $cryptoStream = New-Object System.Security.Cryptography.CryptoStream($outFileStream, $encryptor, [System.Security.Cryptography.CryptoStreamMode]::Write)
 
     try {
-        $buffer = New-Object Byte[] 8192
-        while (($read = $fileStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $cryptoStream.Write($buffer, 0, $read)
+        # File header: magic 'ELY1' (4 bytes), salt (16 bytes), IV (16 bytes)
+        $magic = [System.Text.Encoding]::ASCII.GetBytes('ELY1')
+        $outFileStream.Write($magic, 0, $magic.Length)
+        $outFileStream.Write($salt, 0, $salt.Length)
+        $outFileStream.Write($iv, 0, $iv.Length)
+
+        $cryptoStream = New-Object System.Security.Cryptography.CryptoStream($outFileStream, $encryptor, [System.Security.Cryptography.CryptoStreamMode]::Write)
+        try {
+            $buffer = New-Object Byte[] 8192
+            while (($read = $fileStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $cryptoStream.Write($buffer, 0, $read)
+            }
+        } finally {
+            $cryptoStream.FlushFinalBlock()
+            $cryptoStream.Close()
         }
-    }
-    finally {
-        $cryptoStream.Close()
-        $outFileStream.Close()
-        $fileStream.Close()
-        $aes.Clear()
+    } finally {
+        $outFileStream.Close(); $fileStream.Close(); $aes.Dispose(); $rng.Dispose(); $kdf.Dispose()
     }
 
-    Write-Host "File has been encrypted: $OutputFile"
+    Write-Host "File has been encrypted (PBKDF2+AES-256-CBC): $OutputFile"
 }
 function Get-FileChecksum {
     param (
@@ -131,8 +152,8 @@ function Get-FileChecksum {
 }
 
 # Extract NTLM hashes
-$exportPath = ".\NTLM_Hashes_$timestamp.txt"
-$compressedFilePath = ".\NTLM_Hashes_$timestamp.zip"
+$reportBase = Normalize-ReportPath -p $ElysiumSettings['ReportPathBase']
+if (-not (Test-Path $reportBase)) { New-Item -Path $reportBase -ItemType Directory -Force | Out-Null }
 
 # Build domain details from settings
 $DomainDetails = @{}
@@ -159,6 +180,13 @@ if (-not $selectedDomain) {
 $domainController = $selectedDomain.DC
 $credential = Get-Credential -Message "Enter AD credentials with replication rights for $($selectedDomain.Name)"
 
+$domainPrefix = ($selectedDomain.Name -replace "\W", "_")
+$baseName = "${domainPrefix}_NTLM_Hashes_$timestamp"
+$exportPath = Join-Path -Path $scriptRoot -ChildPath "$baseName.txt"
+$compressedFilePath = Join-Path -Path $scriptRoot -ChildPath "$baseName.zip"
+$encryptedFilePath = Join-Path -Path $scriptRoot -ChildPath "$baseName.enc"
+$blobName = "$baseName.enc"
+
 $ntlmHashes = Get-ADReplAccount -All -Server $domainController -Credential $credential |
 Where-Object { $_.NTHash } |
 ForEach-Object { [BitConverter]::ToString($_.NTHash).Replace("-", "") } |
@@ -179,15 +207,22 @@ Write-Host "File has been encrypted: $encryptedFilePath"
 $localFileChecksum = Get-FileChecksum -Path $encryptedFilePath
 
 # Create the context for Azure Blob Storage with SAS token
-$storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken "$sasToken"
+$sas = $sasToken
+if ([string]::IsNullOrWhiteSpace($sas)) { Write-Error 'sasToken is missing in settings.'; exit }
+$sas = $sas.Trim(); if (-not $sas.StartsWith('?')) { $sas = '?' + $sas }
+$storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sas
+
+# Ensure container exists
+$container = Get-AzStorageContainer -Name $containerName -Context $storageContext -ErrorAction SilentlyContinue
+if (-not $container) { Write-Error "Azure container '$containerName' not found or access denied."; exit }
 
 # Upload the encrypted file to Azure Blob Storage
-Set-AzStorageBlobContent -File $encryptedFilePath -Container $containerName -Blob $blobName -Context $storageContext
+Set-AzStorageBlobContent -File $encryptedFilePath -Container $containerName -Blob $blobName -Context $storageContext | Out-Null
 Write-Host "Encrypted file uploaded to Azure Blob Storage: $blobName"
 
 # Download the blob to a temporary location to verify
 $tempDownloadPath = [System.IO.Path]::GetTempFileName()
-Get-AzStorageBlobContent -Blob $blobName -Container $containerName -Context $storageContext -Destination $tempDownloadPath -Force
+Get-AzStorageBlobContent -Blob $blobName -Container $containerName -Context $storageContext -Destination $tempDownloadPath -Force | Out-Null
 
 # Calculate the downloaded file checksum
 $downloadedFileChecksum = Get-FileChecksum -Path $tempDownloadPath
@@ -195,13 +230,16 @@ $downloadedFileChecksum = Get-FileChecksum -Path $tempDownloadPath
 # Compare the checksums
 if ($localFileChecksum -eq $downloadedFileChecksum) {
     Write-Host "The file was correctly uploaded. Checksum verified."
+    # Clean up local and temporary files only on success
+    Remove-Item -Path $exportPath, $compressedFilePath, $encryptedFilePath, $tempDownloadPath -Force
+    Write-Host "Local and temporary files cleaned up after uploading to Azure Blob Storage."
 }
 else {
-    Write-Host "Checksum verification failed. The uploaded file may be corrupted."
+    Write-Warning "Checksum verification failed. Keeping local artifacts for investigation: $exportPath, $compressedFilePath, $encryptedFilePath"
+    if (Test-Path $tempDownloadPath) { Remove-Item -Path $tempDownloadPath -Force }
 }
 
-# Clean up local and temporary files
-Remove-Item -Path $exportPath, $compressedFilePath, $encryptedFilePath, $tempDownloadPath -Force
-Write-Host "Local and temporary files cleaned up after uploading to Azure Blob Storage."
-
-Write-Host "Script execution completed."
+    Write-Host "Script execution completed."
+} finally {
+    Stop-ExtractTranscript
+}

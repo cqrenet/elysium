@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: ElysiumSettings.txt                    ##
-## Version: 1.0.0                               ##
+## Version: 1.1.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -21,9 +21,14 @@ sasToken =
 # Application Settings
 ######################
 InstallationPath=
-ReportPathBase=/Reports
+ReportPathBase=Reports
 WeakPasswordsDatabase=khdb.txt
-# TODO CheckOnlyEnabledUsers=true
+# CheckOnlyEnabledUsers=true
+
+# Notes:
+# - Required PowerShell modules: DSInternals, ActiveDirectory, Az.Storage (for upload).
+# - AD account permissions: Replication Directory Changes and Replication Directory Changes All
+#   on the domain (DCSync-equivalent) are sufficient; full Domain Admin not required.
 
 # Domain Settings
 #################

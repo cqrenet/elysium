@@ -1,5 +1,52 @@
 # Changelog
 
+## 2025-10-10
+
+### Test-WeakADPasswords.ps1 v1.3.0
+Added:
+- `CheckOnlyEnabledUsers` flag wired from settings to filter accounts prior to `Test-PasswordQuality`.
+- Transcript logging to `Reports/logs/test-weakad-<timestamp>.log`.
+
+### Extract-NTHashes.ps1 v1.2.0
+Added:
+- Transcript logging to `Reports/logs/extract-hashes-<timestamp>.log`.
+
+### Elysium.ps1 v1.1.0
+Updated:
+- Added strict error handling (`$ErrorActionPreference='Stop'`) and `Set-StrictMode`.
+- Resolved script invocations via `$PSScriptRoot` to avoid CWD issues.
+
+### Update-KHDB.ps1 v1.1.0
+Added/Updated:
+- Robust settings validation and SAS token normalization.
+- Safe URL construction with `UriBuilder` and custom User-Agent.
+- TLS 1.2 enforced; `HttpClient` timeout and retry with backoff for transient errors.
+- Download progress for both known and unknown content length.
+- Atomic-ish update: download to temp, extract, validate, backup existing `khdb.txt`, then replace.
+- KHDB validation: format check (32-hex), deduplication and normalization.
+- Transcript logging to `Reports/logs/update-khdb-<timestamp>.log`.
+
+### Test-WeakADPasswords.ps1 v1.2.0
+Updated:
+- Enforced modules via `#Requires`; removed runtime installs.
+- Added strict mode and error preference.
+- Resolved paths relative to `$PSScriptRoot` (settings, KHDB, reports).
+- Ensured report directory creation and sane defaults (`Reports`).
+- Removed stray top-level loop; UPN enrichment occurs during report generation only.
+
+### Extract-NTHashes.ps1 v1.1.0
+Updated:
+- Enforced modules via `#Requires`; added strict mode.
+- Fixed variable ordering bug and unified filename scheme with domain prefix.
+- Implemented PBKDF2 (HMAC-SHA256, 100k iterations) + random salt for AES-256-CBC encryption; header `ELY1|salt|iv`.
+- Normalized SAS token and verified container existence; checksum verified before cleanup; artifacts retained on failure.
+- Paths resolved relative to `$PSScriptRoot`; ensured report base directory exists.
+
+### ElysiumSettings.txt.sample v1.1.0
+Updated:
+- `ReportPathBase` default changed to `Reports` (relative) and added guidance on required modules and replication rights.
+- Added optional `CheckOnlyEnabledUsers=true` example flag.
+
 ## Extract-NTHashes.ps1 
 
 ### version 1.1.1
