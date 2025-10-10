@@ -16,6 +16,14 @@ Updated:
 - Added strict error handling (`$ErrorActionPreference='Stop'`) and `Set-StrictMode`.
 - Resolved script invocations via `$PSScriptRoot` to avoid CWD issues.
 
+### Elysium.ps1 v1.2.0
+Added:
+- Transcript logging to `Reports/logs/orchestrator-<timestamp>.log` and graceful shutdown without `exit`.
+
+### Uninstall.ps1 v1.1.0
+Added:
+- Transcript logging to `%TEMP%/Elysium/logs/uninstall-<timestamp>.log` so logs persist after directory removal.
+
 ### Update-KHDB.ps1 v1.1.0
 Added/Updated:
 - Robust settings validation and SAS token normalization.

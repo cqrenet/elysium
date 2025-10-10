@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Elysium.ps1                            ##
-## Version: 1.1.0                               ##
+## Version: 1.2.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -54,6 +54,21 @@ if ([string]::IsNullOrEmpty($passphrase)) {
 
 # Continue with the rest of your script...
 
+function Start-OrchestratorTranscript {
+    param([string]$BasePath)
+    try {
+        $logsDir = Join-Path -Path $BasePath -ChildPath 'Reports/logs'
+        if (-not (Test-Path $logsDir)) { New-Item -Path $logsDir -ItemType Directory -Force | Out-Null }
+        $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $logPath = Join-Path -Path $logsDir -ChildPath "orchestrator-$ts.log"
+        Start-Transcript -Path $logPath -Force | Out-Null
+    } catch {
+        Write-Warning "Could not start transcript: $($_.Exception.Message)"
+    }
+}
+
+function Stop-OrchestratorTranscript { try { Stop-Transcript | Out-Null } catch {} }
+
 function Show-Menu {
     param (
         [string]$Title = 'Elysium Tool Main Menu'
@@ -67,6 +82,8 @@ function Show-Menu {
     Write-Host "5: Exit"
 }
 
+Start-OrchestratorTranscript -BasePath $PSScriptRoot
+try {
 do {
     Show-Menu
     $userSelection = Read-Host "Please make a selection"
@@ -89,7 +106,8 @@ do {
         }
         '5' {
             Write-Host "Exiting..."
-            exit
+            # end loop; transcript will be stopped after the loop
+            $userSelection = '5'
         }
         default {
             Write-Host "Invalid selection, please try again."
@@ -97,3 +115,6 @@ do {
     }
     pause
 } while ($userSelection -ne '5')
+} finally {
+    Stop-OrchestratorTranscript
+}

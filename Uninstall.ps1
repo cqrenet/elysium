@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Uninstall.ps1                          ##
-## Version: 1.0.0                               ##
+## Version: 1.1.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -18,6 +18,20 @@ Uninstall script for the Elysium AD password testing tool.
 .DESCRIPTION
 This script will remove the Elysium tool and its components (scripts, configurations, and any generated data) from the system, and then delete itself.
 #>
+
+function Start-UninstallTranscript {
+    try {
+        $base = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'Elysium', 'logs')
+        if (-not (Test-Path $base)) { New-Item -Path $base -ItemType Directory -Force | Out-Null }
+        $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $logPath = Join-Path -Path $base -ChildPath "uninstall-$ts.log"
+        Start-Transcript -Path $logPath -Force | Out-Null
+    } catch {
+        Write-Warning "Could not start transcript: $($_.Exception.Message)"
+    }
+}
+
+function Stop-UninstallTranscript { try { Stop-Transcript | Out-Null } catch {} }
 
 function Uninstall-Elysium {
     $ElysiumPath = Get-Location
@@ -42,8 +56,10 @@ function Uninstall-Elysium {
     # Additional cleanup actions can be added here if needed
 }
 
-# Execute the uninstall function
-Uninstall-Elysium
+Start-UninstallTranscript
+try {
+    # Execute the uninstall function
+    Uninstall-Elysium
 
 # Check if the Elysium passphrase environment variable exists
 $passphraseEnvVar = [System.Environment]::GetEnvironmentVariable("ELYSIUM_PASSPHRASE", [System.EnvironmentVariableTarget]::User)
@@ -58,3 +74,6 @@ if ([string]::IsNullOrEmpty($passphraseEnvVar)) {
 
 # Confirm uninstallation
 Write-Host "Elysium tool has been successfully uninstalled. Exiting script." -ForegroundColor Green
+} finally {
+    Stop-UninstallTranscript
+}
