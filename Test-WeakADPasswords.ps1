@@ -128,9 +128,102 @@ Write-Verbose ("Domain details extracted: {0}" -f ($domainDetails | ConvertTo-Js
 # - On non-Windows Core: not supported for AD/DSInternals
 $runningInPSCore = ($PSVersionTable.PSEdition -eq 'Core')
 $onWindows = ($env:OS -match 'Windows') -or ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
+try { $osProductType = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).ProductType } catch { $osProductType = 1 }
+$isServerOS = $onWindows -and ($osProductType -ne 1)
 
 if ($runningInPSCore -and -not $onWindows) {
     throw 'This script requires Windows when running under PowerShell 7 (AD/DSInternals are Windows-only).'
+}
+
+function Test-IsAdmin {
+    try {
+        $wi = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $wp = [Security.Principal.WindowsPrincipal]::new($wi)
+        return $wp.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
+function Ensure-NuGetAndPSGallery {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    } catch { }
+    try {
+        if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction Stop | Out-Null
+        }
+    } catch { Write-Verbose ("NuGet provider install warning: {0}" -f $_.Exception.Message) }
+    try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop } catch { }
+}
+
+function Ensure-ADModule {
+    if (Get-Module -ListAvailable -Name ActiveDirectory) { return $true }
+    Write-Warning "ActiveDirectory module not found."
+    $resp = Read-Host "Install Active Directory PowerShell tools now? [Y/N]"
+    if ($resp -notmatch '^(?i:y|yes)$') { return $false }
+    if (-not (Test-IsAdmin)) { Write-Error 'Administrator rights are required to install AD tools.'; return $false }
+
+    $installed = $false
+    try {
+        if (Get-Command -Name Install-WindowsFeature -ErrorAction SilentlyContinue) {
+            try { Import-Module ServerManager -ErrorAction SilentlyContinue } catch {}
+            Install-WindowsFeature -Name RSAT-AD-PowerShell -IncludeAllSubFeature -IncludeManagementTools -ErrorAction Stop | Out-Null
+            $installed = $true
+        } elseif (Get-Command -Name Add-WindowsCapability -ErrorAction SilentlyContinue) {
+            $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like 'Rsat.ActiveDirectory.DS-LDS.Tools*' } | Select-Object -First 1
+            if ($cap) {
+                Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
+                $installed = $true
+            } else {
+                Write-Warning 'Could not locate RSAT ActiveDirectory capability.'
+            }
+        } else {
+            Write-Warning 'No supported mechanism found to install AD tools automatically on this OS.'
+        }
+    } catch {
+        Write-Error ("Failed to install AD tools: {0}" -f $_.Exception.Message)
+    }
+    if ($installed -and (Get-Module -ListAvailable -Name ActiveDirectory)) { return $true }
+    return $false
+}
+
+function Ensure-DSInternalsModule {
+    # On PS7+Windows we prefer installing into WindowsPowerShell modules so -UseWindowsPowerShell can load it
+    $needWinPSPath = ($runningInPSCore -and $onWindows)
+    $winPSModulesPath = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
+
+    $hasModule = $false
+    if ($needWinPSPath) {
+        # Quick check for presence in WinPS path
+        $candidatePath = Join-Path $winPSModulesPath 'DSInternals'
+        if (Test-Path $candidatePath) { $hasModule = $true }
+    } else {
+        $hasModule = [bool](Get-Module -ListAvailable -Name DSInternals)
+    }
+    if ($hasModule) { return $true }
+
+    Write-Warning "DSInternals module not found."
+    $resp = Read-Host "Install DSInternals from PowerShell Gallery now? [Y/N]"
+    if ($resp -notmatch '^(?i:y|yes)$') { return $false }
+    if (-not (Test-IsAdmin)) { Write-Error 'Administrator rights are required to install modules.'; return $false }
+
+    try {
+        Ensure-NuGetAndPSGallery
+        if ($needWinPSPath) {
+            if (-not (Test-Path $winPSModulesPath)) { New-Item -Path $winPSModulesPath -ItemType Directory -Force | Out-Null }
+            Save-Module -Name DSInternals -Path $winPSModulesPath -Force -ErrorAction Stop
+        } else {
+            Install-Module -Name DSInternals -Scope AllUsers -Force -ErrorAction Stop
+        }
+    } catch {
+        Write-Error ("Failed to install DSInternals: {0}" -f $_.Exception.Message)
+        return $false
+    }
+
+    if ($needWinPSPath) {
+        return (Test-Path (Join-Path $winPSModulesPath 'DSInternals'))
+    } else {
+        return [bool](Get-Module -ListAvailable -Name DSInternals)
+    }
 }
 
 function Import-CompatModule {
@@ -148,8 +241,27 @@ function Import-CompatModule {
     Write-Verbose ("Imported module '{0}' (Core={1}, Windows={2})" -f $Name, $runningInPSCore, $onWindows)
 }
 
-try { Import-CompatModule -Name 'ActiveDirectory' } catch { throw "Failed to import ActiveDirectory module. On PS7, ensure RSAT AD tools are installed and Windows PowerShell 5.1 is present. Details: $($_.Exception.Message)" }
-try { Import-CompatModule -Name 'DSInternals' } catch { throw "Failed to import DSInternals module. On PS7, install DSInternals for Windows PowerShell (Install-Module DSInternals). Details: $($_.Exception.Message)" }
+try {
+    Import-CompatModule -Name 'ActiveDirectory'
+} catch {
+    Write-Warning ("ActiveDirectory import failed: {0}" -f $_.Exception.Message)
+    if (Ensure-ADModule) {
+        Import-CompatModule -Name 'ActiveDirectory'
+    } else {
+        throw "Failed to import ActiveDirectory module. On PS7, ensure RSAT AD tools are installed and Windows PowerShell 5.1 is present."
+    }
+}
+
+try {
+    Import-CompatModule -Name 'DSInternals'
+} catch {
+    Write-Warning ("DSInternals import failed: {0}" -f $_.Exception.Message)
+    if (Ensure-DSInternalsModule) {
+        Import-CompatModule -Name 'DSInternals'
+    } else {
+        throw "Failed to import DSInternals module. Try installing from PSGallery or placing it under '$env:ProgramFiles\WindowsPowerShell\Modules'."
+    }
+}
 
 # Resolve KHDB path with fallbacks
 $installationPath = $ElysiumSettings["InstallationPath"]
