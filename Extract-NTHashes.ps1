@@ -12,7 +12,7 @@
 ##################################################
 
 <#
-#Requires -Modules DSInternals, Az.Storage
+#Requires -Modules DSInternals
 .SYNOPSIS
 Script for extracting NTLM hashes from live AD for further analysis.
 
@@ -66,10 +66,163 @@ function Normalize-ReportPath([string]$p) {
     return (Join-Path -Path $scriptRoot -ChildPath $p)
 }
 
-# External settings
+# Storage provider selection (Azure by default)
+$storageProvider = $ElysiumSettings['StorageProvider']
+if ([string]::IsNullOrWhiteSpace($storageProvider)) { $storageProvider = 'Azure' }
+
+# Azure settings
 $storageAccountName = $ElysiumSettings['storageAccountName']
 $containerName = $ElysiumSettings['containerName']
 $sasToken = $ElysiumSettings['sasToken']
+
+# S3-compatible settings
+$s3EndpointUrl     = $ElysiumSettings['s3EndpointUrl']
+$s3Region          = $ElysiumSettings['s3Region']
+$s3BucketName      = $ElysiumSettings['s3BucketName']
+$s3AccessKeyId     = $ElysiumSettings['s3AccessKeyId']
+$s3SecretAccessKey = $ElysiumSettings['s3SecretAccessKey']
+$s3ForcePathStyle  = $ElysiumSettings['s3ForcePathStyle']
+$s3UseAwsTools     = $ElysiumSettings['s3UseAwsTools']
+if ([string]::IsNullOrWhiteSpace($s3Region)) { $s3Region = 'us-east-1' }
+try { $s3ForcePathStyle = [System.Convert]::ToBoolean($s3ForcePathStyle) } catch { $s3ForcePathStyle = $true }
+try { $s3UseAwsTools = [System.Convert]::ToBoolean($s3UseAwsTools) } catch { $s3UseAwsTools = $false }
+
+function Ensure-AWSS3Module {
+    # Ensure AWS SDK types are available via AWS Tools for PowerShell
+    try {
+        $null = [Amazon.S3.AmazonS3Client]
+        return
+    } catch {
+        try { Import-Module -Name AWS.Tools.S3 -ErrorAction Stop; return } catch {}
+        try { Import-Module -Name AWSPowerShell.NetCore -ErrorAction Stop; return } catch {}
+        throw "AWS Tools for PowerShell not found. Install with: Install-Module AWS.Tools.S3 -Scope CurrentUser"
+    }
+}
+
+function New-S3Client {
+    param(
+        [string]$EndpointUrl,
+        [string]$Region,
+        [string]$AccessKeyId,
+        [string]$SecretAccessKey,
+        [bool]$ForcePathStyle = $true
+    )
+    Ensure-AWSS3Module
+    $creds = New-Object Amazon.Runtime.BasicAWSCredentials($AccessKeyId, $SecretAccessKey)
+    $cfg = New-Object Amazon.S3.AmazonS3Config
+    if ($EndpointUrl) { $cfg.ServiceURL = $EndpointUrl }
+    if ($Region) {
+        try { $cfg.RegionEndpoint = [Amazon.RegionEndpoint]::GetBySystemName($Region) } catch {}
+    }
+    $cfg.ForcePathStyle = [bool]$ForcePathStyle
+    return (New-Object Amazon.S3.AmazonS3Client($creds, $cfg))
+}
+
+# Native S3 SigV4 (no AWS Tools) helpers
+function Get-Bytes([string]$s) { return [System.Text.Encoding]::UTF8.GetBytes($s) }
+function Get-HashHex([byte[]]$bytes) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+}
+function Get-FileSha256Hex([string]$path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $fs = [System.IO.File]::OpenRead($path)
+    try { return ([BitConverter]::ToString($sha.ComputeHash($fs))).Replace('-', '').ToLowerInvariant() } finally { $fs.Close(); $sha.Dispose() }
+}
+function HmacSha256([byte[]]$key, [string]$data) {
+    $h = [System.Security.Cryptography.HMACSHA256]::new($key)
+    try { return $h.ComputeHash((Get-Bytes $data)) } finally { $h.Dispose() }
+}
+function GetSignatureKey([string]$secret, [string]$dateStamp, [string]$regionName, [string]$serviceName) {
+    $kDate = HmacSha256 (Get-Bytes ('AWS4' + $secret)) $dateStamp
+    $kRegion = HmacSha256 $kDate $regionName
+    $kService = HmacSha256 $kRegion $serviceName
+    return (HmacSha256 $kService 'aws4_request')
+}
+function UriEncode([string]$data, [bool]$encodeSlash) {
+    if ($null -eq $data) { return '' }
+    $enc = [System.Uri]::EscapeDataString($data)
+    if (-not $encodeSlash) { $enc = $enc -replace '%2F','/' }
+    return $enc
+}
+function BuildCanonicalPath([System.Uri]$uri) {
+    $segments = $uri.AbsolutePath.Split('/')
+    $encoded = @()
+    foreach ($seg in $segments) { $encoded += (UriEncode $seg $false) }
+    $path = ($encoded -join '/')
+    if (-not $path.StartsWith('/')) { $path = '/' + $path }
+    return $path
+}
+function ToHex([byte[]]$bytes) { return ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant() }
+function BuildAuthHeaders($method, [System.Uri]$uri, [string]$region, [string]$accessKey, [string]$secretKey, [string]$payloadHash) {
+    $algorithm = 'AWS4-HMAC-SHA256'
+    $amzdate = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $datestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd')
+    $hostHeader = $uri.Host
+    if (-not $uri.IsDefaultPort) { $hostHeader = "$hostHeader:$($uri.Port)" }
+
+    $canonicalUri = BuildCanonicalPath $uri
+    $canonicalQueryString = ''
+    $canonicalHeaders = "host:$hostHeader`n" + "x-amz-content-sha256:$payloadHash`n" + "x-amz-date:$amzdate`n"
+    $signedHeaders = 'host;x-amz-content-sha256;x-amz-date'
+    $canonicalRequest = "$method`n$canonicalUri`n$canonicalQueryString`n$canonicalHeaders`n$signedHeaders`n$payloadHash"
+
+    $credentialScope = "$datestamp/$region/s3/aws4_request"
+    $stringToSign = "$algorithm`n$amzdate`n$credentialScope`n$((Get-HashHex (Get-Bytes $canonicalRequest)))"
+    $signingKey = GetSignatureKey $secretKey $datestamp $region 's3'
+    $signature = ToHex (HmacSha256 $signingKey $stringToSign)
+    $authHeader = "$algorithm Credential=$accessKey/$credentialScope, SignedHeaders=$signedHeaders, Signature=$signature"
+    return @{ 'x-amz-date' = $amzdate; 'x-amz-content-sha256' = $payloadHash; 'Authorization' = $authHeader }
+}
+function BuildS3Uri([string]$endpointUrl, [string]$bucket, [string]$key, [bool]$forcePathStyle) {
+    $base = [System.Uri]$endpointUrl
+    $ub = [System.UriBuilder]::new($base)
+    if ($forcePathStyle) {
+        $p = ($ub.Path.TrimEnd('/'))
+        if ([string]::IsNullOrEmpty($p)) { $p = '/' }
+        $ub.Path = ($p.TrimEnd('/') + '/' + $bucket + '/' + $key)
+    } else {
+        $ub.Host = "$bucket." + $ub.Host
+        $p = $ub.Path.TrimEnd('/')
+        if ([string]::IsNullOrEmpty($p)) { $p = '/' }
+        $ub.Path = ($p.TrimEnd('/') + '/' + $key)
+    }
+    return $ub.Uri
+}
+function Invoke-S3PutFile([string]$endpointUrl, [string]$bucket, [string]$key, [string]$filePath, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
+    $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
+    $payloadHash = Get-FileSha256Hex -path $filePath
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, $uri)
+        $stream = [System.IO.File]::OpenRead($filePath)
+        $req.Content = [System.Net.Http.StreamContent]::new($stream)
+        $hdrs = BuildAuthHeaders -method 'PUT' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
+        $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
+        $resp = $client.SendAsync($req).Result
+        if (-not $resp.IsSuccessStatusCode) { throw "S3 PUT failed: $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
+    } finally { if ($req) { $req.Dispose() }; if ($stream) { $stream.Close(); $stream.Dispose() }; $client.Dispose() }
+}
+function Invoke-S3GetToFile([string]$endpointUrl, [string]$bucket, [string]$key, [string]$targetPath, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
+    $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
+    $payloadHash = (Get-HashHex (Get-Bytes ''))
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
+        $hdrs = BuildAuthHeaders -method 'GET' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
+        $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
+        $resp = $client.SendAsync($req).Result
+        if (-not $resp.IsSuccessStatusCode) { throw "S3 GET failed: $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
+        $bytes = $resp.Content.ReadAsByteArrayAsync().Result
+        [System.IO.File]::WriteAllBytes($targetPath, $bytes)
+    } finally { if ($req) { $req.Dispose() }; $client.Dispose() }
+}
 
 # Retrieve the passphrase from a user environment variable
 $passphrase = [System.Environment]::GetEnvironmentVariable("ELYSIUM_PASSPHRASE", [System.EnvironmentVariableTarget]::User)
@@ -206,33 +359,75 @@ Write-Host "File has been encrypted: $encryptedFilePath"
 # Calculate the local file checksum
 $localFileChecksum = Get-FileChecksum -Path $encryptedFilePath
 
-# Create the context for Azure Blob Storage with SAS token
-$sas = $sasToken
-if ([string]::IsNullOrWhiteSpace($sas)) { Write-Error 'sasToken is missing in settings.'; exit }
-$sas = $sas.Trim(); if (-not $sas.StartsWith('?')) { $sas = '?' + $sas }
-$storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sas
+if ($storageProvider -ieq 'S3') {
+    # S3-compatible path (e.g., IDrive e2) without requiring AWS Tools
+    if ([string]::IsNullOrWhiteSpace($s3BucketName)) { Write-Error 's3BucketName is missing in settings.'; exit }
+    if ([string]::IsNullOrWhiteSpace($s3AccessKeyId) -or [string]::IsNullOrWhiteSpace($s3SecretAccessKey)) { Write-Error 's3AccessKeyId / s3SecretAccessKey missing in settings.'; exit }
+    if ([string]::IsNullOrWhiteSpace($s3EndpointUrl)) { Write-Error 's3EndpointUrl is required for S3-compatible storage.'; exit }
 
-# Ensure container exists
-$container = Get-AzStorageContainer -Name $containerName -Context $storageContext -ErrorAction SilentlyContinue
-if (-not $container) { Write-Error "Azure container '$containerName' not found or access denied."; exit }
+    $usedAwsTools = $false
+    if ($s3UseAwsTools) {
+        try {
+            $s3Client = New-S3Client -EndpointUrl $s3EndpointUrl -Region $s3Region -AccessKeyId $s3AccessKeyId -SecretAccessKey $s3SecretAccessKey -ForcePathStyle:$s3ForcePathStyle
+            # Upload
+            $putReq = New-Object Amazon.S3.Model.PutObjectRequest -Property @{ BucketName = $s3BucketName; Key = $blobName; FilePath = $encryptedFilePath }
+            $null = $s3Client.PutObject($putReq)
+            Write-Host "Encrypted file uploaded to S3-compatible bucket (AWS Tools): $blobName"
+            $tempDownloadPath = [System.IO.Path]::GetTempFileName()
+            $getReq = New-Object Amazon.S3.Model.GetObjectRequest -Property @{ BucketName = $s3BucketName; Key = $blobName }
+            $getResp = $s3Client.GetObject($getReq)
+            $getResp.WriteResponseStreamToFile($tempDownloadPath, $true)
+            $getResp.Dispose()
+            $downloadedFileChecksum = Get-FileChecksum -Path $tempDownloadPath
+            $usedAwsTools = $true
+        } catch {
+            Write-Warning "AWS Tools path failed or not available. Falling back to native HTTP (SigV4). Details: $($_.Exception.Message)"
+            $usedAwsTools = $false
+        }
+    }
 
-# Upload the encrypted file to Azure Blob Storage
-Set-AzStorageBlobContent -File $encryptedFilePath -Container $containerName -Blob $blobName -Context $storageContext | Out-Null
-Write-Host "Encrypted file uploaded to Azure Blob Storage: $blobName"
+    if (-not $usedAwsTools) {
+        Invoke-S3PutFile -endpointUrl $s3EndpointUrl -bucket $s3BucketName -key $blobName -filePath $encryptedFilePath -region $s3Region -ak $s3AccessKeyId -sk $s3SecretAccessKey -forcePathStyle:$s3ForcePathStyle
+        Write-Host "Encrypted file uploaded to S3-compatible bucket: $blobName"
+        $tempDownloadPath = [System.IO.Path]::GetTempFileName()
+        Invoke-S3GetToFile -endpointUrl $s3EndpointUrl -bucket $s3BucketName -key $blobName -targetPath $tempDownloadPath -region $s3Region -ak $s3AccessKeyId -sk $s3SecretAccessKey -forcePathStyle:$s3ForcePathStyle
+        $downloadedFileChecksum = Get-FileChecksum -Path $tempDownloadPath
+    }
+}
+else {
+    # Azure Blob Storage path (default)
+    $sas = $sasToken
+    if ([string]::IsNullOrWhiteSpace($sas)) { Write-Error 'sasToken is missing in settings.'; exit }
+    $sas = $sas.Trim(); if (-not $sas.StartsWith('?')) { $sas = '?' + $sas }
+    try { Import-Module Az.Storage -ErrorAction Stop } catch {}
+    $storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sas
 
-# Download the blob to a temporary location to verify
-$tempDownloadPath = [System.IO.Path]::GetTempFileName()
-Get-AzStorageBlobContent -Blob $blobName -Container $containerName -Context $storageContext -Destination $tempDownloadPath -Force | Out-Null
+    # Ensure container exists
+    $container = Get-AzStorageContainer -Name $containerName -Context $storageContext -ErrorAction SilentlyContinue
+    if (-not $container) { Write-Error "Azure container '$containerName' not found or access denied."; exit }
 
-# Calculate the downloaded file checksum
-$downloadedFileChecksum = Get-FileChecksum -Path $tempDownloadPath
+    # Upload the encrypted file to Azure Blob Storage
+    Set-AzStorageBlobContent -File $encryptedFilePath -Container $containerName -Blob $blobName -Context $storageContext | Out-Null
+    Write-Host "Encrypted file uploaded to Azure Blob Storage: $blobName"
+
+    # Download the blob to a temporary location to verify
+    $tempDownloadPath = [System.IO.Path]::GetTempFileName()
+    Get-AzStorageBlobContent -Blob $blobName -Container $containerName -Context $storageContext -Destination $tempDownloadPath -Force | Out-Null
+
+    # Calculate the downloaded file checksum
+    $downloadedFileChecksum = Get-FileChecksum -Path $tempDownloadPath
+}
 
 # Compare the checksums
 if ($localFileChecksum -eq $downloadedFileChecksum) {
     Write-Host "The file was correctly uploaded. Checksum verified."
     # Clean up local and temporary files only on success
     Remove-Item -Path $exportPath, $compressedFilePath, $encryptedFilePath, $tempDownloadPath -Force
-    Write-Host "Local and temporary files cleaned up after uploading to Azure Blob Storage."
+    if ($storageProvider -ieq 'S3') {
+        Write-Host "Local and temporary files cleaned up after uploading to S3-compatible storage."
+    } else {
+        Write-Host "Local and temporary files cleaned up after uploading to Azure Blob Storage."
+    }
 }
 else {
     Write-Warning "Checksum verification failed. Keeping local artifacts for investigation: $exportPath, $compressedFilePath, $encryptedFilePath"

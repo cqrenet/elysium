@@ -12,11 +12,29 @@
 ## Support: support@cqre.net                    ##
 ##################################################
 
-# KHDB Settings
-###############
+# Storage Settings
+##################
+# Select storage provider: Azure or S3 (S3 = S3-compatible like IDrive e2)
+# Default is Azure when not set.
+StorageProvider = Azure
+
+# Azure (if StorageProvider=Azure)
 storageAccountName = 
 containerName = 
 sasToken = 
+
+# S3-compatible (if StorageProvider=S3)
+# Example for IDrive e2: set endpoint URL to the region endpoint you were given.
+# Access key/secret correspond to your S3-compatible credentials.
+s3EndpointUrl = 
+s3Region = us-east-1
+s3BucketName = 
+s3AccessKeyId = 
+s3SecretAccessKey = 
+# Many S3-compatible providers require path-style addressing
+# (true recommended for MinIO/IDrive e2/Wasabi). Set to true/false.
+s3ForcePathStyle = true
+s3UseAwsTools = false
 
 # Application Settings
 ######################
@@ -26,7 +44,9 @@ WeakPasswordsDatabase=khdb.txt
 # CheckOnlyEnabledUsers=true
 
 # Notes:
-# - Required PowerShell modules: DSInternals, ActiveDirectory, Az.Storage (for upload).
+# - Required PowerShell modules: DSInternals, ActiveDirectory
+#   For Azure uploads: Az.Storage
+#   For S3-compatible uploads: AWS.Tools.S3 or AWSPowerShell.NetCore
 # - AD account permissions: Replication Directory Changes and Replication Directory Changes All
 #   on the domain (DCSync-equivalent) are sufficient; full Domain Admin not required.
 

@@ -22,14 +22,18 @@ During first run, the tool will ask for passphrase that will be used to encrypt/
 After installation, edit ElysiumSettings.txt, check all variables and add domains to test.
 ### Update Known-Hashed Database (KHDB)
 Run script Elysium.ps1 as an administrator and choose option 1 (Update Known-Hashes Database).
-The script will then download the database from dedicated Azure Storage, decompresses it and updates the current database.
+The script downloads the database from the configured storage (Azure Blob or S3-compatible), decompresses it and updates the current database.
 ### Test Weak AD passwords
 Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Passwords).
 The script will then ask for the domain to be tested and upon choice will ask for domain administrator password. The DA username is already provided in the script for each domain.
 The tool then connects to Domain Controller and tests all enabled users in the domain against KHDB. PDF report with findings is then generated.
 ### Send current hashes for update KHDB
 Run script Elysium.ps1 as an administrator and choose option 3 (Extract and Send Hashes).
-The tool will then ask for domain and password of domain administrator. With correct credentials, the tool will then extract current hashes (no history) of non-disabled users, compresses and encrypts them and sends them to the tool provider.
+The tool will then ask for domain and password of domain administrator. With correct credentials, the tool will then extract current hashes (no history) of non-disabled users, compresses and encrypts them and uploads them to the configured storage (Azure Blob or S3-compatible) for pickup by the tool provider.
+
+S3-compatible usage notes:
+- No AWS Tools required. The scripts can sign requests using native SigV4 via .NET and HttpClient.
+- To force using AWS Tools instead, set `s3UseAwsTools = true` in `ElysiumSettings.txt` and install `AWS.Tools.S3`.
 ### Uninstallation
 Run script Elysium.ps1 as an administrator and choose option 4 (Uninstall).
 The script will then delete everything and remove the passphrase variable.
