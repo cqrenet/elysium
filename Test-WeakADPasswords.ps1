@@ -113,7 +113,34 @@ function Get-DomainDetailsFromSettings {
 $domainDetails = Get-DomainDetailsFromSettings -Settings $ElysiumSettings
 Write-Verbose ("Domain details extracted: {0}" -f ($domainDetails | ConvertTo-Json))
 
-# Modules are required via #Requires; PowerShell will stop early if missing.
+# Import required modules with PowerShell 7 compatibility
+# - On Windows PowerShell: Import normally
+# - On PowerShell 7+ on Windows: Import using -UseWindowsPowerShell if available
+# - On non-Windows Core: not supported for AD/DSInternals
+$runningInPSCore = ($PSVersionTable.PSEdition -eq 'Core')
+$onWindows = ($env:OS -match 'Windows') -or ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
+
+if ($runningInPSCore -and -not $onWindows) {
+    throw 'This script requires Windows when running under PowerShell 7 (AD/DSInternals are Windows-only).'
+}
+
+function Import-CompatModule {
+    param(
+        [Parameter(Mandatory)][string]$Name
+    )
+    $params = @{ Name = $Name; ErrorAction = 'Stop' }
+    if ($runningInPSCore -and $onWindows) {
+        $importCmd = Get-Command -Name Import-Module -CommandType Cmdlet -ErrorAction SilentlyContinue
+        if ($importCmd -and $importCmd.Parameters.ContainsKey('UseWindowsPowerShell')) {
+            $params['UseWindowsPowerShell'] = $true
+        }
+    }
+    Import-Module @params
+    Write-Verbose ("Imported module '{0}' (Core={1}, Windows={2})" -f $Name, $runningInPSCore, $onWindows)
+}
+
+try { Import-CompatModule -Name 'ActiveDirectory' } catch { throw "Failed to import ActiveDirectory module. On PS7, ensure RSAT AD tools are installed and Windows PowerShell 5.1 is present. Details: $($_.Exception.Message)" }
+try { Import-CompatModule -Name 'DSInternals' } catch { throw "Failed to import DSInternals module. On PS7, install DSInternals for Windows PowerShell (Install-Module DSInternals). Details: $($_.Exception.Message)" }
 
 # Resolve KHDB path with fallbacks
 $installationPath = $ElysiumSettings["InstallationPath"]
