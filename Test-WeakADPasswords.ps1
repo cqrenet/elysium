@@ -28,6 +28,15 @@ $VerbosePreference = "Continue"
 
 $scriptRoot = $PSScriptRoot
 
+# Ensure consistent UTF-8 output for files across PS5.1/PS7
+try {
+    $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+    $PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'
+    $PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'
+    # Also align $OutputEncoding for external writes
+    $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+} catch { }
+
 function Start-TestTranscript {
     param([string]$BasePath)
     try {
@@ -286,10 +295,10 @@ function Test-WeakADPasswords {
     $upnOnlyContent = $upnReportContent -join "`r`n"
 
     try {
-        $updatedReportContent | Out-File -FilePath $reportPath -ErrorAction Stop
+        $updatedReportContent | Out-File -FilePath $reportPath -Encoding utf8 -ErrorAction Stop
         Write-Host "Report saved to $reportPath"
 
-        $upnOnlyContent | Out-File -FilePath $upnOnlyReportPath -ErrorAction Stop
+        $upnOnlyContent | Out-File -FilePath $upnOnlyReportPath -Encoding utf8 -ErrorAction Stop
         Write-Host "UPN-only report saved to $upnOnlyReportPath"
     } catch {
         Write-Error ("Failed to save report: {0}" -f $_.Exception.Message)
