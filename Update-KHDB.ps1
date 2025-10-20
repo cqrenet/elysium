@@ -113,8 +113,29 @@ function New-S3Client {
 
 # Native S3 SigV4 (no AWS Tools) helpers
 function Get-Bytes([string]$s) { return [System.Text.Encoding]::UTF8.GetBytes($s) }
-function Get-HashHex([byte[]]$bytes) { $sha=[System.Security.Cryptography.SHA256]::Create(); try { ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
-function HmacSha256([byte[]]$key, [string]$data) { $h=[System.Security.Cryptography.HMACSHA256]::new($key); try { $h.ComputeHash((Get-Bytes $data)) } finally { $h.Dispose() } }
+function Get-HashHex([byte[]]$bytes) {
+    # Use stream overload to avoid ambiguous resolution and property access
+    if ($null -eq $bytes) { $bytes = [byte[]]@() }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $ms = New-Object System.IO.MemoryStream -ArgumentList (,$bytes)
+        try {
+            $hash = $sha.ComputeHash([System.IO.Stream]$ms)
+        } finally { $ms.Dispose() }
+        return ([BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+    } finally { $sha.Dispose() }
+}
+function HmacSha256([byte[]]$key, [string]$data) {
+    # Use stream overload to avoid ambiguous resolution and property access
+    $h = [System.Security.Cryptography.HMACSHA256]::new($key)
+    try {
+        $b = [System.Text.Encoding]::UTF8.GetBytes($data)
+        $ms = New-Object System.IO.MemoryStream -ArgumentList (,$b)
+        try {
+            return $h.ComputeHash([System.IO.Stream]$ms)
+        } finally { $ms.Dispose() }
+    } finally { $h.Dispose() }
+}
 function GetSignatureKey([string]$secret, [string]$dateStamp, [string]$regionName, [string]$serviceName) {
     $kDate = HmacSha256 (Get-Bytes ('AWS4' + $secret)) $dateStamp
     $kRegion = HmacSha256 $kDate $regionName
@@ -128,7 +149,7 @@ function BuildAuthHeaders($method, [System.Uri]$uri, [string]$region, [string]$a
     $algorithm = 'AWS4-HMAC-SHA256'
     $amzdate = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
     $datestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd')
-    $hostHeader = $uri.Host; if (-not $uri.IsDefaultPort) { $hostHeader = "$hostHeader:$($uri.Port)" }
+    $hostHeader = $uri.Host; if (-not $uri.IsDefaultPort) { $hostHeader = "${hostHeader}:$($uri.Port)" }
     $canonicalUri = BuildCanonicalPath $uri
     $canonicalQueryString = ''
     $canonicalHeaders = "host:$hostHeader`n" + "x-amz-content-sha256:$payloadHash`n" + "x-amz-date:$amzdate`n"
@@ -149,20 +170,22 @@ function BuildS3Uri([string]$endpointUrl, [string]$bucket, [string]$key, [bool]$
 }
 function Invoke-S3HttpDownloadWithRetry([string]$endpointUrl, [string]$bucket, [string]$key, [string]$targetPath, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
     Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
-    $client = [System.Net.Http.HttpClient]::new()
+    [System.Net.Http.HttpClient]$client = [System.Net.Http.HttpClient]::new()
     $retries=5; $delay=2
     try {
         for($i=0;$i -lt $retries;$i++){
             try {
+                # Initialize here to satisfy StrictMode even if exceptions occur before assignment
+                $req = $null
                 $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
                 $payloadHash = (Get-HashHex (Get-Bytes ''))
-                $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
+                [System.Net.Http.HttpRequestMessage]$req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
                 $hdrs = BuildAuthHeaders -method 'GET' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
                 $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
                 $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
                 $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
-                $resp = $client.SendAsync($req).Result
-                if (-not $resp.IsSuccessStatusCode) { throw "HTTP $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
+                [System.Net.Http.HttpResponseMessage]$resp = $client.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+                $null = $resp.EnsureSuccessStatusCode()
                 $totalBytes = $resp.Content.Headers.ContentLength
                 $stream = $resp.Content.ReadAsStreamAsync().Result
                 $fs = [System.IO.File]::Create($targetPath)
