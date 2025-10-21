@@ -8,6 +8,10 @@ Fixed:
 - Hardened hashing helpers to avoid `ComputeHash` overload ambiguity under Windows PowerShell.
 - Domain selection menu now respects the configured numeric order.
 
+### Test-WeakADPasswords.ps1 v1.3.2
+Changed:
+- Switched to the sorted KHDB path when driving `Test-PasswordQuality`, eliminating full linear scans and avoiding malformed-line crashes on massive datasets.
+
 ### Test-WeakADPasswords.ps1 v1.3.1
 Fixed:
 - Domain picker now renders in numeric order from settings for predictable operator workflows.

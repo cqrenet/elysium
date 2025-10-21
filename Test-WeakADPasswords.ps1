@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.3.1                               ##
+## Version: 1.3.2                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -355,7 +355,7 @@ function Test-WeakADPasswords {
                 if ($_.PSObject.Properties.Name -contains 'Enabled') { $_.Enabled } else { $true }
             }
         }
-        $testResults = $accounts | Test-PasswordQuality -WeakPasswordHashesFile $FilePath
+        $testResults = $accounts | Test-PasswordQuality -WeakPasswordHashesSortedFile $FilePath
         Write-Verbose "Password quality test completed."
     } catch {
         Write-Error ("An error occurred while testing passwords: {0}" -f $_.Exception.Message)
