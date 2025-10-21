@@ -365,40 +365,62 @@ function Test-WeakADPasswords {
     # Report generation with dynamic content and UPNs
     $reportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_WeakPasswordReport_$timestamp.txt"
     $upnOnlyReportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_DictionaryPasswordUPNs_$timestamp.txt"
-    
-    Write-Verbose "Generating report at $reportPath"
-    $reportContent = @($header, ($testResults | Out-String).Trim(), $footer) -join "`r`n"
-    
-    $lines = $reportContent -split "`r`n"
-    $newReportContent = @()
+
+    # Build a lookup of SAM account names to UPNs for dictionary hits by leveraging structured results
+    $dictionaryLogonNames = @()
+    foreach ($result in @($testResults)) {
+        if ($null -ne $result -and $null -ne $result.WeakPassword) {
+            $dictionaryLogonNames += $result.WeakPassword
+        }
+    }
+    $dictionaryLogonNames = $dictionaryLogonNames | Sort-Object -Unique
+
+    $dictionarySamToUpn = @{}
     $upnReportContent = @()
 
+    foreach ($logonName in $dictionaryLogonNames) {
+        $samAccountName = $logonName -replace '^.*\\', ''
+        if (-not [string]::IsNullOrWhiteSpace($samAccountName) -and -not $dictionarySamToUpn.ContainsKey($samAccountName)) {
+            Write-Verbose "Looking up UPN for $samAccountName (dictionary hit)"
+            $upn = Get-UserUPN -SamAccountName $samAccountName -Domain $selectedDomain.DC -Credential $credential
+            $dictionarySamToUpn[$samAccountName] = $upn
+            if ($upn -ne "UPN not found") {
+                $upnReportContent += $upn
+            }
+        }
+    }
+
+    Write-Verbose "Generating report at $reportPath"
+    $reportContent = @($header, ($testResults | Out-String).Trim(), $footer) -join "`r`n"
+
+    $lines = $reportContent -split "`r`n"
+    $newReportContent = @()
     $collectingUPNs = $false
 
     foreach ($line in $lines) {
         $newReportContent += $line
-        
-        # Start collecting UPNs after detecting the relevant section in the report
+
         if ($line -match "Passwords of these accounts have been found in the dictionary:") {
             $collectingUPNs = $true
             continue
         }
 
-        # Stop collecting UPNs if a new section starts or end of section is detected
-        if ($collectingUPNs -and $line -match "^\s*$") {
-            $collectingUPNs = $false
-        }
+        if ($collectingUPNs) {
+            if ($line -match '^\s*$') { continue }
+            if ($line -match '^\s*-{2,}') { continue }
+            if ($line -match '^\s*(SamAccountName|LogonName)\b') { continue }
+            if ($line -match '^[^\s].*:\s*$' -and $line -notmatch 'dictionary') {
+                $collectingUPNs = $false
+                continue
+            }
 
-        # Regex to match the SAMAccountName from the report line and collect UPNs if in the target section
-        if ($collectingUPNs -and $line -match "^\s*(\S+)\s*$") {
-            $samAccountName = $matches[1]
-            Write-Verbose "Looking up UPN for $samAccountName"
-            $upn = Get-UserUPN -SamAccountName $samAccountName -Domain $selectedDomain.DC -Credential $credential
-            $newReportContent += "    UPN: $upn"
-
-            # Collect UPNs only for accounts found in the dictionary section
-            if ($upn -ne "UPN not found") {
-                $upnReportContent += $upn
+            $firstToken = ($line.Trim() -split '\s+')[0]
+            if (-not [string]::IsNullOrWhiteSpace($firstToken)) {
+                $samAccountName = $firstToken -replace '^.*\\', ''
+                if ($dictionarySamToUpn.ContainsKey($samAccountName)) {
+                    $upnValue = $dictionarySamToUpn[$samAccountName]
+                    $newReportContent += "    UPN: $upnValue"
+                }
             }
         }
     }

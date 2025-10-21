@@ -11,6 +11,7 @@ Fixed:
 ### Test-WeakADPasswords.ps1 v1.3.1
 Fixed:
 - Domain picker now renders in numeric order from settings for predictable operator workflows.
+- UPN export now relies on structured weak-password results, so dictionary hit UPN lists are populated reliably.
 
 ## 2025-10-10
 
