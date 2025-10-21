@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.3.0                               ##
+## Version: 1.3.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -24,7 +24,7 @@ This script will test the passwords of selected domain (defined in ElysiumSettin
 # Enable verbose output
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$VerbosePreference = "Continue"
+$VerbosePreference = "SilentlyContinue"
 
 $scriptRoot = $PSScriptRoot
 

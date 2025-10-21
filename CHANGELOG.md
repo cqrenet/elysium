@@ -1,5 +1,17 @@
 # Changelog
 
+## 2025-10-21
+
+### Extract-NTHashes.ps1 v1.2.1
+Fixed:
+- Corrected SigV4 host header formatting so non-default ports serialize without parser errors.
+- Hardened hashing helpers to avoid `ComputeHash` overload ambiguity under Windows PowerShell.
+- Domain selection menu now respects the configured numeric order.
+
+### Test-WeakADPasswords.ps1 v1.3.1
+Fixed:
+- Domain picker now renders in numeric order from settings for predictable operator workflows.
+
 ## 2025-10-10
 
 ### Test-WeakADPasswords.ps1 v1.3.0

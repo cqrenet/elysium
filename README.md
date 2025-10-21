@@ -25,14 +25,14 @@ Run script Elysium.ps1 as an administrator and choose option 1 (Update Known-Has
 The script downloads the database from the configured storage (Azure Blob or S3-compatible), decompresses it and updates the current database.
 ### Test Weak AD passwords
 Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Passwords).
-The script will then ask for the domain to be tested and upon choice will ask for domain administrator password. The DA username is already provided in the script for each domain.
-The tool then connects to Domain Controller and tests all enabled users in the domain against KHDB. PDF report with findings is then generated.
+The script will list domains in the same order as they appear in `ElysiumSettings.txt` and, after you pick one, prompt for the corresponding domain administrator password (the username is taken from the settings file).
+The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation.
 ### Send current hashes for update KHDB
 Run script Elysium.ps1 as an administrator and choose option 3 (Extract and Send Hashes).
-The tool will then ask for domain and password of domain administrator. With correct credentials, the tool will then extract current hashes (no history) of non-disabled users, compresses and encrypts them and uploads them to the configured storage (Azure Blob or S3-compatible) for pickup by the tool provider.
+Domains are listed in configuration order, after which the script prompts for the replication-capable account password. With valid credentials, it extracts current NTLM hashes (no history) for active accounts, compresses the results, encrypts them with the configured passphrase, and uploads the payload to the configured storage (Azure Blob or S3-compatible). A checksum-verified round-trip download confirms the upload before local artifacts are removed.
 
 S3-compatible usage notes:
-- No AWS Tools required. The scripts can sign requests using native SigV4 via .NET and HttpClient.
+- No AWS Tools required. The scripts sign requests using native SigV4 via .NET and HttpClient, including non-default endpoint ports.
 - To force using AWS Tools instead, set `s3UseAwsTools = true` in `ElysiumSettings.txt` and install `AWS.Tools.S3`.
 ### Uninstallation
 Run script Elysium.ps1 as an administrator and choose option 4 (Uninstall).
