@@ -99,7 +99,7 @@ function Get-DomainDetailsFromSettings {
         [hashtable]$Settings
     )
 
-    $domainDetails = @{}
+    $domainDetails = [ordered]@{}
     $counter = 1
     while ($true) {
         $nameKey = "Domain${counter}Name"
@@ -330,7 +330,7 @@ function Test-WeakADPasswords {
 
     # User selects a domain
     Write-Host "Select a domain to test:"
-    $DomainDetails.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value.Name)" }
+    $DomainDetails.GetEnumerator() | Sort-Object { [int]$_.Key } | ForEach-Object { Write-Host "$($_.Key): $($_.Value.Name)" }
     $selection = Read-Host "Enter the number of the domain"
     
     if (-not ($DomainDetails.ContainsKey($selection))) {

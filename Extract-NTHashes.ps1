@@ -122,7 +122,14 @@ function New-S3Client {
 function Get-Bytes([string]$s) { return [System.Text.Encoding]::UTF8.GetBytes($s) }
 function Get-HashHex([byte[]]$bytes) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+    try {
+        if ($null -eq $bytes) { $bytes = [byte[]]@() }
+        $ms = [System.IO.MemoryStream]::new($bytes)
+        try {
+            $hashBytes = $sha.ComputeHash($ms)
+            return ([BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
+        } finally { $ms.Dispose() }
+    } finally { $sha.Dispose() }
 }
 function Get-FileSha256Hex([string]$path) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -131,7 +138,11 @@ function Get-FileSha256Hex([string]$path) {
 }
 function HmacSha256([byte[]]$key, [string]$data) {
     $h = [System.Security.Cryptography.HMACSHA256]::new($key)
-    try { return $h.ComputeHash((Get-Bytes $data)) } finally { $h.Dispose() }
+    try {
+        $dataBytes = Get-Bytes $data
+        $ms = [System.IO.MemoryStream]::new($dataBytes)
+        try { return $h.ComputeHash($ms) } finally { $ms.Dispose() }
+    } finally { $h.Dispose() }
 }
 function GetSignatureKey([string]$secret, [string]$dateStamp, [string]$regionName, [string]$serviceName) {
     $kDate = HmacSha256 (Get-Bytes ('AWS4' + $secret)) $dateStamp
@@ -159,7 +170,7 @@ function BuildAuthHeaders($method, [System.Uri]$uri, [string]$region, [string]$a
     $amzdate = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
     $datestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd')
     $hostHeader = $uri.Host
-    if (-not $uri.IsDefaultPort) { $hostHeader = "$hostHeader:$($uri.Port)" }
+    if (-not $uri.IsDefaultPort) { $hostHeader = "{0}:{1}" -f $hostHeader, $uri.Port }
 
     $canonicalUri = BuildCanonicalPath $uri
     $canonicalQueryString = ''
@@ -308,8 +319,8 @@ function Get-FileChecksum {
 $reportBase = Normalize-ReportPath -p $ElysiumSettings['ReportPathBase']
 if (-not (Test-Path $reportBase)) { New-Item -Path $reportBase -ItemType Directory -Force | Out-Null }
 
-# Build domain details from settings
-$DomainDetails = @{}
+# Build domain details from settings (ordered to keep numeric index order)
+$DomainDetails = [ordered]@{}
 for ($i = 1; $ElysiumSettings.ContainsKey("Domain${i}Name"); $i++) {
     $DomainDetails["$i"] = @{
         Name = $ElysiumSettings["Domain${i}Name"]
@@ -320,7 +331,7 @@ for ($i = 1; $ElysiumSettings.ContainsKey("Domain${i}Name"); $i++) {
 
 # User selects a domain
 Write-Host "Select a domain to extract NTLM hashes:"
-$DomainDetails.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value.Name)" }
+$DomainDetails.GetEnumerator() | Sort-Object { [int]$_.Key } | ForEach-Object { Write-Host "$($_.Key): $($_.Value.Name)" }
 $selection = Read-Host "Enter the number of the domain"
 $selectedDomain = $DomainDetails[$selection]
 
