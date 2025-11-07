@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Prepare-KHDBStorage.ps1                ##
-## Version: 1.0.0                               ##
+## Version: 1.1.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 

@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Elysium.ps1                            ##
-## Version: 1.2.0                               ##
+## Version: 1.3.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -92,8 +92,8 @@ function Show-Menu {
     Write-Host "1: Download/Update Known-Hashes Database (KHDB)"
     Write-Host "2: Test Weak AD Passwords"
     Write-Host "3: Extract and Send Current Hashes for KHDB Update"
-    Write-Host "4: Uninstall"
-    Write-Host "5: Update Lithnet Password Protection Store"
+    Write-Host "4: Update Lithnet Password Protection Store"
+    Write-Host "5: Uninstall"
     Write-Host "6: Exit"
 }
 
@@ -126,12 +126,12 @@ do {
             }
         }
         '4' {
-            Write-Host "Uninstalling..."
-            & (Join-Path -Path $PSScriptRoot -ChildPath 'Uninstall.ps1')
-        }
-        '5' {
             Write-Host "Updating Lithnet Password Protection store..."
             & (Join-Path -Path $PSScriptRoot -ChildPath 'Update-LithnetStore.ps1')
+        }
+        '5' {
+            Write-Host "Uninstalling..."
+            & (Join-Path -Path $PSScriptRoot -ChildPath 'Uninstall.ps1')
         }
         '6' {
             Write-Host "Exiting..."

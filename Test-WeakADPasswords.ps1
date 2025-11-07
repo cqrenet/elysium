@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.3.3                               ##
+## Version: 1.4.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
