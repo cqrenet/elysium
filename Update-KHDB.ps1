@@ -392,7 +392,7 @@ function Combine-StoragePath {
 function Load-Manifest {
     param([string]$Path)
     $raw = Get-Content -LiteralPath $Path -Encoding UTF8 -Raw
-    return $raw | ConvertFrom-Json -Depth 8
+    return $raw | ConvertFrom-Json
 }
 
 function Validate-Manifest {

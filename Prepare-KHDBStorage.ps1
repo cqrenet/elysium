@@ -963,7 +963,7 @@ if ($UploadOnly) {
     }
 
     try {
-        $manifestObject = (Get-Content -LiteralPath $manifestPath -Encoding UTF8 -Raw) | ConvertFrom-Json -Depth 6
+        $manifestObject = (Get-Content -LiteralPath $manifestPath -Encoding UTF8 -Raw) | ConvertFrom-Json
     } catch {
         throw "Failed to parse manifest '$manifestPath': $($_.Exception.Message)"
     }
@@ -1032,7 +1032,7 @@ if ($UploadOnly) {
             }
             if (Test-Path -LiteralPath $resolvedCheckpointPath) {
                 try {
-                    $resumeState = (Get-Content -LiteralPath $resolvedCheckpointPath -Encoding UTF8 -Raw) | ConvertFrom-Json -Depth 6
+                    $resumeState = (Get-Content -LiteralPath $resolvedCheckpointPath -Encoding UTF8 -Raw) | ConvertFrom-Json
                 } catch {
                     throw "Failed to parse checkpoint '$resolvedCheckpointPath': $($_.Exception.Message)"
                 }
