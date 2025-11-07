@@ -1,15 +1,12 @@
-function Restart-WithPwshIfAvailable {
+function Invoke-RestartWithExecutable {
     param(
+        [string]$ExecutablePath,
         [hashtable]$BoundParameters,
         [object[]]$UnboundArguments
     )
 
-    if ($PSVersionTable.PSVersion.Major -ge 7) { return }
-    $pwsh = Get-Command -Name 'pwsh' -ErrorAction SilentlyContinue
-    if (-not $pwsh) { return }
+    if (-not $ExecutablePath) { return }
     if (-not $PSCommandPath) { return }
-
-    Write-Host ("PowerShell 7 detected at '{0}'; relaunching script under pwsh..." -f $pwsh.Path)
 
     $argList = @('-NoLogo', '-NoProfile', '-File', $PSCommandPath)
 
@@ -30,6 +27,44 @@ function Restart-WithPwshIfAvailable {
         $argList += $UnboundArguments
     }
 
-    & $pwsh.Path @argList
+    & $ExecutablePath @argList
     exit $LASTEXITCODE
+}
+
+function Restart-WithPwshIfAvailable {
+    param(
+        [hashtable]$BoundParameters,
+        [object[]]$UnboundArguments
+    )
+
+    if ($PSVersionTable.PSVersion.Major -ge 7 -or $PSVersionTable.PSEdition -eq 'Core') { return }
+    $pwsh = Get-Command -Name 'pwsh' -ErrorAction SilentlyContinue
+    if (-not $pwsh) { return }
+    Write-Host ("PowerShell 7 detected at '{0}'; relaunching script under pwsh..." -f $pwsh.Path)
+    Invoke-RestartWithExecutable -ExecutablePath $pwsh.Path -BoundParameters $BoundParameters -UnboundArguments $UnboundArguments
+}
+
+function Restart-WithWindowsPowerShellIfAvailable {
+    param(
+        [hashtable]$BoundParameters,
+        [object[]]$UnboundArguments
+    )
+
+    if ($PSVersionTable.PSEdition -eq 'Desktop') { return }
+    $powershellCmd = Get-Command -Name 'powershell.exe' -ErrorAction SilentlyContinue
+    $powershellPath = $null
+    if ($powershellCmd) {
+        $powershellPath = $powershellCmd.Path
+    } else {
+        $defaultPath = Join-Path -Path $env:SystemRoot -ChildPath 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (Test-Path -LiteralPath $defaultPath) {
+            $powershellPath = $defaultPath
+        }
+    }
+    if (-not $powershellPath) {
+        Write-Warning 'Windows PowerShell (powershell.exe) was not found; continuing under current host.'
+        return
+    }
+    Write-Host ("Windows PowerShell detected at '{0}'; relaunching script under powershell.exe..." -f $powershellPath)
+    Invoke-RestartWithExecutable -ExecutablePath $powershellPath -BoundParameters $BoundParameters -UnboundArguments $UnboundArguments
 }
