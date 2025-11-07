@@ -74,6 +74,20 @@ function Start-OrchestratorTranscript {
 
 function Stop-OrchestratorTranscript { try { Stop-Transcript | Out-Null } catch {} }
 
+function Invoke-WindowsPowerShellScript {
+    param([string]$ScriptPath)
+    $powershellCmd = Get-Command -Name 'powershell.exe' -ErrorAction SilentlyContinue
+    if (-not $powershellCmd) {
+        throw "Windows PowerShell (powershell.exe) was not found. Install it or run the script from a Desktop edition session."
+    }
+    $args = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath)
+    & $powershellCmd.Path @args
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw ("Windows PowerShell script '{0}' exited with code {1}." -f $ScriptPath, $exitCode)
+    }
+}
+
 function Show-Menu {
     param (
         [string]$Title = 'Elysium Tool Main Menu'
@@ -137,17 +151,4 @@ do {
 } while ($userSelection -ne '6')
 } finally {
     Stop-OrchestratorTranscript
-}
-function Invoke-WindowsPowerShellScript {
-    param([string]$ScriptPath)
-    $powershellCmd = Get-Command -Name 'powershell.exe' -ErrorAction SilentlyContinue
-    if (-not $powershellCmd) {
-        throw "Windows PowerShell (powershell.exe) was not found. Install it or run the script from a Desktop edition session."
-    }
-    $args = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath)
-    & $powershellCmd.Path @args
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        throw ("Windows PowerShell script '{0}' exited with code {1}." -f $ScriptPath, $exitCode)
-    }
 }
