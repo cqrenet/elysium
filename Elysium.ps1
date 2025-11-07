@@ -21,12 +21,17 @@ Elysium.ps1 offers a menu to perform various actions:
 2. Test Weak AD Passwords
 3. Extract and Send Current Hashes for KHDB Update
 4. Uninstall the tool
-5. Exit
+5. Update Lithnet Password Protection store
+6. Exit
 #>
 
 # Safer defaults
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+[string]$commonHelper = Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.Common.ps1'
+if (-not (Test-Path -LiteralPath $commonHelper)) { throw "Common helper not found at $commonHelper" }
+. $commonHelper
+Restart-WithPwshIfAvailable -BoundParameters $PSBoundParameters -UnboundArguments $MyInvocation.UnboundArguments
 
 # Define the path to the settings file
 $settingsFilePath = Join-Path -Path $PSScriptRoot -ChildPath "ElysiumSettings.txt"
@@ -79,7 +84,8 @@ function Show-Menu {
     Write-Host "2: Test Weak AD Passwords"
     Write-Host "3: Extract and Send Current Hashes for KHDB Update"
     Write-Host "4: Uninstall"
-    Write-Host "5: Exit"
+    Write-Host "5: Update Lithnet Password Protection Store"
+    Write-Host "6: Exit"
 }
 
 Start-OrchestratorTranscript -BasePath $PSScriptRoot
@@ -105,16 +111,20 @@ do {
             & (Join-Path -Path $PSScriptRoot -ChildPath 'Uninstall.ps1')
         }
         '5' {
+            Write-Host "Updating Lithnet Password Protection store..."
+            & (Join-Path -Path $PSScriptRoot -ChildPath 'Update-LithnetStore.ps1')
+        }
+        '6' {
             Write-Host "Exiting..."
             # end loop; transcript will be stopped after the loop
-            $userSelection = '5'
+            $userSelection = '6'
         }
         default {
             Write-Host "Invalid selection, please try again."
         }
     }
     pause
-} while ($userSelection -ne '5')
+} while ($userSelection -ne '6')
 } finally {
     Stop-OrchestratorTranscript
 }

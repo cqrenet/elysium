@@ -51,6 +51,14 @@ ReportPathBase=Reports
 WeakPasswordsDatabase=khdb.txt
 # CheckOnlyEnabledUsers=true
 
+# Lithnet Password Protection Settings
+######################################
+LithnetStorePath=
+LithnetSyncHibp=false
+LithnetHashSources=khdb.txt
+LithnetPlaintextSources=
+LithnetBannedWordSources=
+
 # Telemetry (optional)
 ######################
 # These values are empty by default so no telemetry is sent.

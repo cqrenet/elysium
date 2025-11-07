@@ -20,6 +20,7 @@ Sensitive operations are confined only to the dedicated host. In the third step,
 This tool is provided in private git repository. Installation and updating is done with cloning and pulling from this repository.
 During first run, the tool will ask for passphrase that will be used to encrypt/decrypt sensitive content.
 After installation, edit ElysiumSettings.txt, check all variables and add domains to test.
+All scripts automatically relaunch under PowerShell 7 (`pwsh`) when it is installed so that features like parallel transfers are available; if pwsh is missing they continue under Windows PowerShell 5.1 with the legacy single-threaded behavior.
 ### Update Known-Hashed Database (KHDB)
 Run script Elysium.ps1 as an administrator and choose option 1 (Update Known-Hashes Database).
 The updater now pulls a manifest plus individual hash shards (two-hex prefix layout) from the configured storage (Azure Blob or S3-compatible), verifies checksums, replaces only changed shards, and rebuilds `khdb.txt` for local use. Deleted shards listed in the manifest are removed automatically. When PowerShell 7 is available the downloader automatically fetches up to `-MaxParallelTransfers` shards in parallel (default `5`); on Windows PowerShell 5.1 it reverts to the original sequential behavior. Override the concurrency as needed when running the script directly (for example `.\Update-KHDB.ps1 -MaxParallelTransfers 8`).
@@ -55,6 +56,10 @@ If you want to know the script was executed without collecting telemetry, set a 
 ### Send current hashes for update KHDB
 Run script Elysium.ps1 as an administrator and choose option 3 (Extract and Send Hashes).
 Domains are listed in configuration order, after which the script prompts for the replication-capable account password. With valid credentials, it extracts current NTLM hashes (no history) for active accounts, compresses the results, encrypts them with the configured passphrase, and uploads the payload to the configured storage (Azure Blob or S3-compatible). A checksum-verified round-trip download confirms the upload before local artifacts are removed.
+
+### Update Lithnet Password Protection store
+Run script Elysium.ps1 as an administrator and choose option 5 (Update Lithnet Password Protection Store).
+Configure the target folder via `LithnetStorePath` in `ElysiumSettings.txt` (the location created with `Open-Store`). The script automatically imports the `khdb.txt` file unless you override/add additional NTLM hash lists in `LithnetHashSources` (comma or semicolon separated). You can also populate plaintext password lists (`LithnetPlaintextSources`) and banned-word files (`LithnetBannedWordSources`), or enable `LithnetSyncHibp=true` to seed the store directly from the Have I Been Pwned API (using `Sync-HashesFromHibp`). Behind the scenes the helper loads the `LithnetPasswordProtection` module, opens the store, runs [`Import-CompromisedPasswordHashes`](https://docs.lithnet.io/password-protection/advanced-help/powershell-reference/import-compromisedpasswordhashes)/`Import-CompromisedPasswords`/`Import-BannedWords` for each configured file, and then closes the store.
 
 S3-compatible usage notes:
 - No AWS Tools required. The scripts sign requests using native SigV4 via .NET and HttpClient, including non-default endpoint ports.

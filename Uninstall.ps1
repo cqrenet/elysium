@@ -19,6 +19,13 @@ Uninstall script for the Elysium AD password testing tool.
 This script will remove the Elysium tool and its components (scripts, configurations, and any generated data) from the system, and then delete itself.
 #>
 
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+[string]$commonHelper = Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.Common.ps1'
+if (-not (Test-Path -LiteralPath $commonHelper)) { throw "Common helper not found at $commonHelper" }
+. $commonHelper
+Restart-WithPwshIfAvailable -BoundParameters $PSBoundParameters -UnboundArguments $MyInvocation.UnboundArguments
+
 function Start-UninstallTranscript {
     try {
         $base = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'Elysium', 'logs')
