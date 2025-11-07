@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.3.2                               ##
+## Version: 1.3.3                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -52,6 +52,63 @@ function Start-TestTranscript {
 
 function Stop-TestTranscript { try { Stop-Transcript | Out-Null } catch {} }
 
+function Invoke-UsageBeacon {
+    param(
+        [string]$Url,
+        [string]$Method = 'GET',
+        [int]$TimeoutSeconds = 5,
+        [string]$InstanceId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return }
+
+    $normalizedMethod = 'GET'
+    if (-not [string]::IsNullOrWhiteSpace($Method)) {
+        $normalizedMethod = $Method.ToUpperInvariant()
+    }
+    if ($normalizedMethod -notin @('GET', 'POST', 'PUT')) {
+        $normalizedMethod = 'GET'
+    }
+
+    $requestParams = @{
+        Uri         = $Url
+        Method      = $normalizedMethod
+        ErrorAction = 'Stop'
+    }
+
+    $invokeWebRequestCmd = $null
+    try { $invokeWebRequestCmd = Get-Command -Name Invoke-WebRequest -ErrorAction Stop } catch { }
+    if ($invokeWebRequestCmd -and $invokeWebRequestCmd.Parameters.ContainsKey('UseBasicParsing')) {
+        $requestParams['UseBasicParsing'] = $true
+    }
+    if ($TimeoutSeconds -gt 0 -and $invokeWebRequestCmd -and $invokeWebRequestCmd.Parameters.ContainsKey('TimeoutSec')) {
+        $requestParams['TimeoutSec'] = $TimeoutSeconds
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {
+        $requestParams['Headers'] = @{ 'X-Elysium-Instance' = $InstanceId }
+    }
+
+    if ($normalizedMethod -in @('POST', 'PUT')) {
+        $payload = [ordered]@{
+            script   = 'Test-WeakADPasswords'
+            version  = '1.3.3'
+            ranAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+        }
+        if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {
+            $payload['instanceId'] = $InstanceId
+        }
+        $requestParams['ContentType'] = 'application/json'
+        $requestParams['Body'] = ($payload | ConvertTo-Json -Depth 3 -Compress)
+    }
+
+    try {
+        Invoke-WebRequest @requestParams | Out-Null
+        Write-Verbose ("Usage beacon sent via {0}." -f $normalizedMethod)
+    } catch {
+        Write-Verbose ("Usage beacon failed: {0}" -f $_.Exception.Message)
+    }
+}
+
 # Current timestamp for both report generation and header
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 
@@ -91,6 +148,30 @@ try {
     } catch {
         Write-Error ("An error occurred while loading settings: {0}" -f $_.Exception.Message)
         exit
+    }
+
+    $usageBeaconUrl = $ElysiumSettings['UsageBeaconUrl']
+    $usageBeaconMethod = $ElysiumSettings['UsageBeaconMethod']
+    $usageBeaconInstanceId = $ElysiumSettings['UsageBeaconInstanceId']
+    $usageBeaconTimeoutSeconds = $null
+    if ($ElysiumSettings.ContainsKey('UsageBeaconTimeoutSeconds')) {
+        $parsedTimeout = 0
+        if ([int]::TryParse($ElysiumSettings['UsageBeaconTimeoutSeconds'], [ref]$parsedTimeout)) {
+            $usageBeaconTimeoutSeconds = $parsedTimeout
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($usageBeaconUrl)) {
+        $beaconParams = @{ Url = $usageBeaconUrl }
+        if (-not [string]::IsNullOrWhiteSpace($usageBeaconMethod)) {
+            $beaconParams['Method'] = $usageBeaconMethod
+        }
+        if (-not [string]::IsNullOrWhiteSpace($usageBeaconInstanceId)) {
+            $beaconParams['InstanceId'] = $usageBeaconInstanceId
+        }
+        if ($null -ne $usageBeaconTimeoutSeconds) {
+            $beaconParams['TimeoutSeconds'] = $usageBeaconTimeoutSeconds
+        }
+        Invoke-UsageBeacon @beaconParams
     }
 
 # Define the function to extract domain details from settings

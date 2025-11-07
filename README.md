@@ -22,12 +22,36 @@ During first run, the tool will ask for passphrase that will be used to encrypt/
 After installation, edit ElysiumSettings.txt, check all variables and add domains to test.
 ### Update Known-Hashed Database (KHDB)
 Run script Elysium.ps1 as an administrator and choose option 1 (Update Known-Hashes Database).
-The script downloads the database from the configured storage (Azure Blob or S3-compatible), decompresses it and updates the current database.
+The updater now pulls a manifest plus individual hash shards (two-hex prefix layout) from the configured storage (Azure Blob or S3-compatible), verifies checksums, replaces only changed shards, and rebuilds `khdb.txt` for local use. Deleted shards listed in the manifest are removed automatically.
+
+To publish an updated shard set, run `Prepare-KHDBStorage.ps1` against your sorted `khdb.txt` (or point it at the directory/list of the Have I Been Pwned `.gz` slices). The helper reconstructs the full 32‑hex NTLM values (prefix + remainder), deduplicates per hash (keeping the largest count), splits by the first two hex characters, writes a manifest (`version`, `sha256`, `size`, entry counts), and can upload the resulting files directly to Azure Blob Storage (via SAS) or S3-compatible endpoints using SigV4. Invalid or malformed entries are omitted automatically, and a short report (aggregate counts + `invalid-hashes.txt`) is produced for review. Example:
+
+```powershell
+.\Prepare-KHDBStorage.ps1 -SourcePath .\khdb.txt `
+    -OutputRoot .\publish `
+    -StorageProvider S3 `
+    -S3EndpointUrl https://s3.example.com `
+    -S3BucketName private-khdb `
+    -S3AccessKeyId AKIA... `
+    -S3SecretAccessKey ... `
+    -ManifestRemotePath khdb/manifest.json `
+    -ShardRemotePrefix khdb/shards
+```
+
+Use `-SkipUpload` to stage files locally, or `-StorageProvider Azure` with `storageAccountName`/`containerName`/`sasToken` when targeting Azure Blob Storage. Add `-ShowProgress` (optionally tune `-ProgressUpdateInterval`) if you want a running `Write-Progress` indicator while the hashes are being split. Pass `-ForcePlainText` when your `khdb.txt` already contains complete hashes and you want `.gz` references treated as invalid instead of being expanded. When you only need to push an already prepared package, combine `-UploadOnly` with `-OutputRoot` pointing at the existing shard directory and choose the storage provider to perform an upload-only run. Missing storage values are pulled from `ElysiumSettings.txt` automatically (override the path with `-SettingsPath`) so you don’t have to retype S3/Azure credentials for every run.
+
+Every run also emits a cleaned, DSInternals-friendly `khdb-clean.txt` beside the shards so you can inspect or distribute the merged list before publishing.
+
+When `-ForcePlainText` is specified the script automatically keeps a checkpoint (default: `<output>/khdb.checkpoint.json`) and resumes from it on the next run so massive inputs don’t restart from scratch. Use `-CheckpointPath` to relocate that file or `-NoCheckpoint` to disable the behavior entirely.
 ### Test Weak AD passwords
 Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Passwords).
 The script will list domains in the same order as they appear in `ElysiumSettings.txt` and, after you pick one, prompt for the corresponding domain administrator password (the username is taken from the settings file).
 The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation.
 The KHDB file is consumed via binary search as a sorted hash list (plain text lines like `HASH:count`); ensure the file you place at `khdb.txt` keeps that ordering and omits stray blank lines.
+
+#### Optional usage beacon
+If you want to know the script was executed without collecting telemetry, set a pre-signed URL (for example, an S3 `PUT` URL) in `UsageBeaconUrl` inside `ElysiumSettings.txt`. When present, the weak-password script issues a single request as soon as it loads the settings. Only the script name, its version, a UTC timestamp, and the optional `UsageBeaconInstanceId` value are sent, and network failures never block the run. Choose the HTTP verb via `UsageBeaconMethod` (`GET`, `POST`, or `PUT`) and adjust the timeout with `UsageBeaconTimeoutSeconds` if your storage endpoint needs more time.
+
 ### Send current hashes for update KHDB
 Run script Elysium.ps1 as an administrator and choose option 3 (Extract and Send Hashes).
 Domains are listed in configuration order, after which the script prompts for the replication-capable account password. With valid credentials, it extracts current NTLM hashes (no history) for active accounts, compresses the results, encrypts them with the configured passphrase, and uploads the payload to the configured storage (Azure Blob or S3-compatible). A checksum-verified round-trip download confirms the upload before local artifacts are removed.

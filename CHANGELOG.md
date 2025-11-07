@@ -1,5 +1,46 @@
 # Changelog
 
+## 2025-10-30
+
+### Update-KHDB.ps1 v2.0.0
+Changed:
+- Replaced single-archive workflow with manifest-driven, two-hex shard downloads that verify SHA256/size before in-place updates.
+- Added incremental refresh logic, stale shard cleanup, and automatic rebuild of the merged `khdb.txt` for downstream scripts.
+- Hardened validation to stream-check merged output while preserving strict TLS, retry, and transcript behaviour.
+
+### ElysiumSettings.txt.sample v1.3.0
+Added:
+- Documented `KhdbManifestPath`, `KhdbShardPrefix`, and `KhdbLocalShardDir` defaults for the shard-aware updater.
+
+### README.md
+Changed:
+- Described the manifest/shard update flow so operators understand the incremental download model and automatic cleanup.
+
+### Prepare-KHDBStorage.ps1 v1.0.0
+Added:
+- Helper script to split `khdb.txt` (or a directory/list of `.gz` HIBP slices) into two-hex shards, build the JSON manifest, and push the package to Azure Blob Storage or S3-compatible endpoints.
+- Validation step that tallies and quarantines malformed hashes before sharding, writing `invalid-hashes.txt` plus a console summary so bad data never reaches storage.
+- Optional `-ShowProgress` mode emitting periodic `Write-Progress` updates (interval configurable) so large ingests visibly tick forward.
+- Automatic reconstruction of HIBP NTLM hashes (file-prefix + suffix) so partially stored hashes still produce full 32-hex values in the shards, plus per-prefix deduplication that keeps the highest observed count.
+- `-ForcePlainText` switch to skip `.gz` expansions entirely and treat the source as pre-built hash lines (skipped entries are reported separately).
+- Emits a merged `khdb-clean.txt` alongside the shards for DSInternals or offline review, including SHA256 fingerprints for both manifest and clean output.
+- Automatic checkpoint/resume when `-ForcePlainText` is used (configurable via `-CheckpointPath`, disable with `-NoCheckpoint`) so large ingests can be paused and resumed without reprocessing prior shards.
+
+## 2025-10-26
+
+### Test-WeakADPasswords.ps1 v1.3.3
+Added:
+- Opt-in usage beacon that fires a single HTTP request (GET/POST/PUT) after settings load, suitable for pre-signed S3 URLs, and only includes script name, version, and a UTC timestamp (plus optional instance ID).
+- Instance identifier header/body support and configurable timeout so adopters can differentiate deployments without collecting user data.
+
+### ElysiumSettings.txt.sample v1.2.0
+Added:
+- Documented `UsageBeacon*` keys (URL, method, instance ID, timeout) so telemetry stays disabled by default but easy to enable.
+
+### README.md
+Added:
+- Usage beacon section explaining how to configure the lightweight tracking call and what metadata is transmitted.
+
 ## 2025-10-21
 
 ### Extract-NTHashes.ps1 v1.2.1

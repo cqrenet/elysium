@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: ElysiumSettings.txt                    ##
-## Version: 1.1.0                               ##
+## Version: 1.3.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -36,12 +36,31 @@ s3SecretAccessKey =
 s3ForcePathStyle = true
 s3UseAwsTools = false
 
+# KHDB Shard Settings
+#####################
+# The KHDB update script downloads a manifest plus per-prefix shards (default shard size 2).
+# These values control the remote object names and local storage directory.
+KhdbManifestPath=khdb/manifest.json
+KhdbShardPrefix=khdb/shards
+KhdbLocalShardDir=khdb-shards
+
 # Application Settings
 ######################
 InstallationPath=
 ReportPathBase=Reports
 WeakPasswordsDatabase=khdb.txt
 # CheckOnlyEnabledUsers=true
+
+# Telemetry (optional)
+######################
+# These values are empty by default so no telemetry is sent.
+# Provide a pre-signed URL (for example, an S3 PUT) to receive a single beacon
+# when the weak-password test starts. Only script name, version, and timestamp
+# are transmitted; you can set UsageBeaconInstanceId to differentiate deployments.
+UsageBeaconUrl=
+UsageBeaconMethod=GET   # GET, POST, or PUT
+UsageBeaconInstanceId=
+UsageBeaconTimeoutSeconds=5
 
 # Notes:
 # - Required PowerShell modules: DSInternals, ActiveDirectory
