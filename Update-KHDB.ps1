@@ -103,6 +103,12 @@ function Ensure-AWSS3Module {
     throw "AWS Tools for PowerShell not found. Install with: Install-Module AWS.Tools.S3 -Scope CurrentUser"
 }
 
+function Get-FunctionDefinitionText {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $cmd = Get-Command -Name $Name -CommandType Function -ErrorAction Stop
+    return $cmd.ScriptBlock.Ast.Extent.Text
+}
+
 function New-S3Client {
     param(
         [string]$EndpointUrl,
@@ -502,11 +508,56 @@ function Remove-EmptyDirectories {
 }
 
 function Update-KHDB {
+    param(
+        [ValidateRange(1, 64)]
+        [int]$MaxParallelTransfers = 5
+    )
     Start-UpdateTranscript -BasePath $scriptRoot
     try {
         $settings = Read-ElysiumSettings
         $installPath = Get-InstallationPath $settings
         Ensure-Directory $installPath
+
+        $psSupportsParallel = ($PSVersionTable.PSVersion.Major -ge 7)
+        $effectiveParallelTransfers = if ($MaxParallelTransfers -lt 1) { 1 } else { [int]$MaxParallelTransfers }
+        $parallelDownloadsEnabled = $psSupportsParallel -and $effectiveParallelTransfers -gt 1
+        if (-not $psSupportsParallel -and $effectiveParallelTransfers -gt 1) {
+            Write-Verbose "Parallel transfers requested but PowerShell $($PSVersionTable.PSVersion) does not support ForEach-Object -Parallel; using serial downloads."
+        }
+        $parallelAzureDownloadHelpers = $null
+        $parallelAzureDownloadHelperList = @()
+        $parallelS3DownloadHelpers = $null
+        $parallelS3DownloadHelperList = @()
+        if ($parallelDownloadsEnabled) {
+            $parallelAzureDownloadHelpers = @{
+                'Build-BlobUri'          = Get-FunctionDefinitionText 'Build-BlobUri'
+                'Invoke-DownloadWithRetry' = Get-FunctionDefinitionText 'Invoke-DownloadWithRetry'
+                'New-HttpClient'         = Get-FunctionDefinitionText 'New-HttpClient'
+                'Get-FileSha256Lower'    = Get-FunctionDefinitionText 'Get-FileSha256Lower'
+            }
+            $parallelAzureDownloadHelperList = $parallelAzureDownloadHelpers.GetEnumerator() | ForEach-Object {
+                [pscustomobject]@{ Name = $_.Key; Definition = $_.Value }
+            }
+            $parallelS3DownloadHelpers = @{}
+            @(
+                'Get-Bytes',
+                'Get-HashHex',
+                'HmacSha256',
+                'ToHex',
+                'GetSignatureKey',
+                'UriEncode',
+                'BuildCanonicalPath',
+                'BuildAuthHeaders',
+                'BuildS3Uri',
+                'Invoke-S3HttpDownloadWithRetry',
+                'Get-FileSha256Lower'
+            ) | ForEach-Object {
+                $parallelS3DownloadHelpers[$_] = Get-FunctionDefinitionText $_
+            }
+            $parallelS3DownloadHelperList = $parallelS3DownloadHelpers.GetEnumerator() | ForEach-Object {
+                [pscustomobject]@{ Name = $_.Key; Definition = $_.Value }
+            }
+        }
 
         $storageProvider = $settings['StorageProvider']
         if ([string]::IsNullOrWhiteSpace($storageProvider)) { $storageProvider = 'Azure' }
@@ -531,6 +582,17 @@ function Update-KHDB {
 
         Write-Host "Fetching manifest ($manifestBlobPath) from $storageProvider storage..."
 
+        $s3Bucket = $null
+        $s3EndpointUrl = $null
+        $s3Region = $null
+        $s3AK = $null
+        $s3SK = $null
+        $forcePathStyle = $true
+        $s3UseAwsTools = $false
+        $storageAccountName = $null
+        $containerName = $null
+        $sasToken = $null
+
         if ($storageProvider -ieq 'S3') {
             $s3Bucket = $settings['s3BucketName']
             $s3EndpointUrl = $settings['s3EndpointUrl']
@@ -545,6 +607,10 @@ function Update-KHDB {
             if ([string]::IsNullOrWhiteSpace($s3EndpointUrl)) { throw 's3EndpointUrl is required for S3-compatible storage.' }
             $forcePathStyle = Get-BooleanSetting -Value $s3Force -Default $true
             try { $s3UseAwsTools = [System.Convert]::ToBoolean($s3UseAwsTools) } catch { $s3UseAwsTools = $false }
+            if ($parallelDownloadsEnabled -and $s3UseAwsTools) {
+                Write-Warning 'Parallel shard downloads require the SigV4 HTTP path; disabling AWS Tools mode for this run.'
+                $s3UseAwsTools = $false
+            }
 
             $downloadKey = Combine-StoragePath -Prefix $null -Name $manifestBlobPath
             if ($s3UseAwsTools) {
@@ -603,7 +669,7 @@ function Update-KHDB {
             }
         }
 
-        $downloadQueue = New-Object System.Collections.Generic.List[psobject]
+        $downloadQueue = [System.Collections.ArrayList]::new()
         $remoteNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($entry in $manifest.shards) {
             $name = [string]$entry.name
@@ -633,10 +699,14 @@ function Update-KHDB {
                 }
             }
 
-            if ($needsDownload) {
-                $downloadQueue.Add($entry)
-            }
+        if ($needsDownload) {
+            [void]$downloadQueue.Add([pscustomobject]@{
+                Name   = $name
+                Sha256 = $expectedHash
+                Size   = $expectedSize
+            })
         }
+    }
 
         if ($downloadQueue.Count -gt 0) {
             Write-Host ("{0} shard(s) require download or refresh." -f $downloadQueue.Count)
@@ -660,74 +730,140 @@ function Update-KHDB {
                 $useAwsTools = $settings['s3UseAwsTools']
                 try { $useAwsTools = [System.Convert]::ToBoolean($useAwsTools) } catch { $useAwsTools = $false }
 
-                if ($downloadQueue.Count -gt 0) {
+                if ($downloadQueue.Count -gt 0 -and -not $parallelDownloadsEnabled) {
                     if ($useAwsTools) {
                         $storageClient = New-S3Client -EndpointUrl $s3EndpointUrl -Region $s3Region -AccessKeyId $s3AK -SecretAccessKey $s3SK -ForcePathStyle:$forcePathStyle
-                    } else {
-                        $storageHttpClient = @{
-                            Endpoint    = $s3EndpointUrl
-                            Bucket      = $s3Bucket
-                            Region      = $s3Region
-                            AccessKey   = $s3AK
-                            SecretKey   = $s3SK
-                            ForcePath   = $forcePathStyle
-                        }
+                    }
+                    $storageHttpClient = @{
+                        Endpoint    = $s3EndpointUrl
+                        Bucket      = $s3Bucket
+                        Region      = $s3Region
+                        AccessKey   = $s3AK
+                        SecretKey   = $s3SK
+                        ForcePath   = $forcePathStyle
                     }
                 }
             } else {
-                if ($downloadQueue.Count -gt 0) {
+                if ($downloadQueue.Count -gt 0 -and -not $parallelDownloadsEnabled) {
                     $storageHttpClient = New-HttpClient
                 }
             }
 
-            $downloadIndex = 0
-            foreach ($entry in $downloadQueue) {
-                $downloadIndex++
-                $name = [string]$entry.name
-                $expectedHash = ([string]$entry.sha256).ToLowerInvariant()
-                $expectedSize = 0L
-                [void][long]::TryParse([string]$entry.size, [ref]$expectedSize)
+            if ($parallelDownloadsEnabled -and $downloadQueue.Count -gt 0) {
+                Write-Host ("Downloading shards with up to {0} concurrent transfer(s)..." -f $effectiveParallelTransfers)
+                $remotePrefixForParallel = if ([string]::IsNullOrWhiteSpace($remoteShardPrefix)) { $null } else { $remoteShardPrefix.Replace('\', '/').Trim('/') }
+                $parallelDownloadHelpers = if ($isS3) { $parallelS3DownloadHelperList } else { $parallelAzureDownloadHelperList }
+                $downloadQueue.ToArray() | ForEach-Object -Parallel {
+                    $entry = $PSItem
+                    try {
+                        if ($null -eq $entry) { return }
+                        foreach ($helper in $using:parallelDownloadHelpers) {
+                            if (-not (Get-Command $helper.Name -ErrorAction SilentlyContinue)) {
+                                Invoke-Expression $helper.Definition
+                            }
+                        }
+                        $name = [string]$entry.Name
+                        if ([string]::IsNullOrWhiteSpace($name)) {
+                            throw "Parallel shard entry missing name: $(ConvertTo-Json $entry -Compress)"
+                        }
+                        $expectedHash = ([string]$entry.Sha256).ToLowerInvariant()
+                        $expectedSize = [long]$entry.Size
 
-                $activity = "Downloading shard $downloadIndex/$($downloadQueue.Count): $name"
-                $remoteKey = Combine-StoragePath -Prefix $remoteShardPrefix -Name $name
-                $stagingPath = Join-Path -Path $downloadTempRoot -ChildPath $name
-                Ensure-Directory (Split-Path -Path $stagingPath -Parent)
+                        $remoteKey = $name.Replace('\', '/').TrimStart('/')
+                        if (-not [string]::IsNullOrWhiteSpace($using:remotePrefixForParallel)) {
+                            $remoteKey = $using:remotePrefixForParallel + '/' + $remoteKey
+                        }
+                        $stagingPath = Join-Path -Path $using:downloadTempRoot -ChildPath $name
+                        $stagingParent = Split-Path -Path $stagingPath -Parent
+                        if ($stagingParent -and -not (Test-Path -LiteralPath $stagingParent)) {
+                            [System.IO.Directory]::CreateDirectory($stagingParent) | Out-Null
+                        }
 
-                if ($isS3) {
-                    if ($storageClient) {
-                        try {
-                            $request = New-Object Amazon.S3.Model.GetObjectRequest -Property @{ BucketName = $settings['s3BucketName']; Key = $remoteKey }
-                            $response = $storageClient.GetObject($request)
-                            try { $response.WriteResponseStreamToFile($stagingPath, $true) } finally { $response.Dispose() }
-                        } catch {
-                            Write-Warning "AWS Tools download failed for shard '$name': $($_.Exception.Message). Falling back to SigV4 HTTP."
+                        $activity = ("Downloading shard: {0}" -f $name)
+                        if ($using:isS3) {
+                            Invoke-S3HttpDownloadWithRetry -EndpointUrl $using:s3EndpointUrl -Bucket $using:s3Bucket -Key $remoteKey -TargetPath $stagingPath -Region $using:s3Region -AccessKeyId $using:s3AK -SecretAccessKey $using:s3SK -ForcePathStyle:$using:forcePathStyle -Activity $activity
+                        } else {
+                            $client = $null
+                            try {
+                                $client = New-HttpClient
+                                $blobUri = Build-BlobUri -Account $using:storageAccountName -Container $using:containerName -Sas $using:sasToken -BlobName $remoteKey
+                                Invoke-DownloadWithRetry -Client $client -Uri $blobUri -TargetPath $stagingPath -Activity $activity
+                            } finally {
+                                if ($client) { $client.Dispose() }
+                            }
+                        }
+
+                        $downloadInfo = Get-Item -LiteralPath $stagingPath
+                        if ($downloadInfo.Length -ne $expectedSize) {
+                            throw "Shard '$name' size mismatch. Expected $expectedSize bytes, got $($downloadInfo.Length)."
+                        }
+
+                        $actualHash = Get-FileSha256Lower -Path $stagingPath
+                        if ($actualHash -ne $expectedHash) {
+                            throw "Shard '$name' checksum mismatch. Expected $expectedHash, got $actualHash."
+                        }
+
+                        $finalPath = Join-Path -Path $using:localShardRoot -ChildPath $name
+                        $parentDir = Split-Path -Path $finalPath -Parent
+                        if ($parentDir -and -not (Test-Path -LiteralPath $parentDir)) {
+                            [System.IO.Directory]::CreateDirectory($parentDir) | Out-Null
+                        }
+                        Move-Item -LiteralPath $stagingPath -Destination $finalPath -Force
+                        Write-Host ("Shard '{0}' updated." -f $name)
+                    } catch {
+                        throw ("Shard '{0}': {1}" -f $entry.name, $_.Exception.Message)
+                    }
+                } -ThrottleLimit $effectiveParallelTransfers
+            } else {
+                $downloadIndex = 0
+                foreach ($entry in $downloadQueue.ToArray()) {
+                    $downloadIndex++
+                if ($null -eq $entry) { continue }
+                $name = [string]$entry.Name
+                if ([string]::IsNullOrWhiteSpace($name)) {
+                    throw "Shard entry missing name: $(ConvertTo-Json $entry -Compress)"
+                }
+                    $expectedHash = ([string]$entry.Sha256).ToLowerInvariant()
+                    $expectedSize = [long]$entry.Size
+
+                    $activity = "Downloading shard $downloadIndex/$($downloadQueue.Count): $name"
+                    $remoteKey = Combine-StoragePath -Prefix $remoteShardPrefix -Name $name
+                    $stagingPath = Join-Path -Path $downloadTempRoot -ChildPath $name
+                    Ensure-Directory (Split-Path -Path $stagingPath -Parent)
+
+                    if ($isS3) {
+                        if ($storageClient) {
+                            try {
+                            $request = New-Object Amazon.S3.Model.GetObjectRequest -Property @{ BucketName = $s3Bucket; Key = $remoteKey }
+                                $response = $storageClient.GetObject($request)
+                                try { $response.WriteResponseStreamToFile($stagingPath, $true) } finally { $response.Dispose() }
+                            } catch {
+                                Write-Warning "AWS Tools download failed for shard '$name': $($_.Exception.Message). Falling back to SigV4 HTTP."
+                                Invoke-S3HttpDownloadWithRetry -EndpointUrl $storageHttpClient.Endpoint -Bucket $storageHttpClient.Bucket -Key $remoteKey -TargetPath $stagingPath -Region $storageHttpClient.Region -AccessKeyId $storageHttpClient.AccessKey -SecretAccessKey $storageHttpClient.SecretKey -ForcePathStyle:$storageHttpClient.ForcePath -Activity $activity
+                            }
+                        } else {
                             Invoke-S3HttpDownloadWithRetry -EndpointUrl $storageHttpClient.Endpoint -Bucket $storageHttpClient.Bucket -Key $remoteKey -TargetPath $stagingPath -Region $storageHttpClient.Region -AccessKeyId $storageHttpClient.AccessKey -SecretAccessKey $storageHttpClient.SecretKey -ForcePathStyle:$storageHttpClient.ForcePath -Activity $activity
                         }
                     } else {
-                        Invoke-S3HttpDownloadWithRetry -EndpointUrl $storageHttpClient.Endpoint -Bucket $storageHttpClient.Bucket -Key $remoteKey -TargetPath $stagingPath -Region $storageHttpClient.Region -AccessKeyId $storageHttpClient.AccessKey -SecretAccessKey $storageHttpClient.SecretKey -ForcePathStyle:$storageHttpClient.ForcePath -Activity $activity
+                        $blobUri = Build-BlobUri -Account $storageAccountName -Container $containerName -Sas $sasToken -BlobName $remoteKey
+                        Invoke-DownloadWithRetry -Client $storageHttpClient -Uri $blobUri -TargetPath $stagingPath -Activity $activity
                     }
-                } else {
-                    $storageAccountName = $settings['storageAccountName']
-                    $containerName = $settings['containerName']
-                    $sasToken = $settings['sasToken']
-                    $blobUri = Build-BlobUri -Account $storageAccountName -Container $containerName -Sas $sasToken -BlobName $remoteKey
-                    Invoke-DownloadWithRetry -Client $storageHttpClient -Uri $blobUri -TargetPath $stagingPath -Activity $activity
-                }
 
-                $downloadInfo = Get-Item -LiteralPath $stagingPath
-                if ($downloadInfo.Length -ne $expectedSize) {
-                    throw "Shard '$name' size mismatch. Expected $expectedSize bytes, got $($downloadInfo.Length)."
-                }
+                    $downloadInfo = Get-Item -LiteralPath $stagingPath
+                    if ($downloadInfo.Length -ne $expectedSize) {
+                        throw "Shard '$name' size mismatch. Expected $expectedSize bytes, got $($downloadInfo.Length)."
+                    }
 
-                $actualHash = Get-FileSha256Lower -Path $stagingPath
-                if ($actualHash -ne $expectedHash) {
-                    throw "Shard '$name' checksum mismatch. Expected $expectedHash, got $actualHash."
-                }
+                    $actualHash = Get-FileSha256Lower -Path $stagingPath
+                    if ($actualHash -ne $expectedHash) {
+                        throw "Shard '$name' checksum mismatch. Expected $expectedHash, got $actualHash."
+                    }
 
-                $finalPath = Join-Path -Path $localShardRoot -ChildPath $name
-                Ensure-Directory (Split-Path -Path $finalPath -Parent)
-                Move-Item -LiteralPath $stagingPath -Destination $finalPath -Force
-                Write-Host ("Shard '{0}' updated." -f $name)
+                    $finalPath = Join-Path -Path $localShardRoot -ChildPath $name
+                    Ensure-Directory (Split-Path -Path $finalPath -Parent)
+                    Move-Item -LiteralPath $stagingPath -Destination $finalPath -Force
+                    Write-Host ("Shard '{0}' updated." -f $name)
+                }
             }
         } finally {
             if ($storageClient) { $storageClient.Dispose() }

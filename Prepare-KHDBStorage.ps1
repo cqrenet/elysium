@@ -60,6 +60,9 @@ param(
     [switch]$ShowProgress,
     [int]$ProgressUpdateInterval = 100000,
 
+    [ValidateRange(1, 64)]
+    [int]$MaxParallelTransfers = 5,
+
     [switch]$ForcePlainText,
 
     [string]$CheckpointPath,
@@ -122,6 +125,12 @@ function Get-SettingsValue {
     if (-not $Settings) { return $null }
     if ($Settings.ContainsKey($Key)) { return $Settings[$Key] }
     return $null
+}
+
+function Get-FunctionDefinitionText {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $cmd = Get-Command -Name $Name -CommandType Function -ErrorAction Stop
+    return $cmd.ScriptBlock.Ast.Extent.Text
 }
 
 function Merge-ShardsToFile {
@@ -851,6 +860,44 @@ if ($resolvedSettingsPath) {
     }
 }
 
+$psSupportsParallel = ($PSVersionTable.PSVersion.Major -ge 7)
+$effectiveParallelTransfers = if ($MaxParallelTransfers -lt 1) { 1 } else { [int]$MaxParallelTransfers }
+$parallelTransfersEnabled = $psSupportsParallel -and $effectiveParallelTransfers -gt 1
+if (-not $psSupportsParallel -and $effectiveParallelTransfers -gt 1) {
+    Write-Verbose "Parallel transfers requested but PowerShell $($PSVersionTable.PSVersion) does not support ForEach-Object -Parallel; using serial mode."
+}
+$parallelAzureUploadHelpers = $null
+$parallelAzureUploadHelperList = @()
+$parallelS3UploadHelpers = $null
+$parallelS3UploadHelperList = @()
+if ($parallelTransfersEnabled) {
+    $parallelAzureUploadHelpers = @{
+        'Build-BlobUri'    = Get-FunctionDefinitionText 'Build-BlobUri'
+        'Upload-AzureBlob' = Get-FunctionDefinitionText 'Upload-AzureBlob'
+    }
+    $parallelAzureUploadHelperList = $parallelAzureUploadHelpers.GetEnumerator() | ForEach-Object {
+        [pscustomobject]@{ Name = $_.Key; Definition = $_.Value }
+    }
+    $parallelS3UploadHelpers = @{}
+    @(
+        'Get-Bytes',
+        'Get-HashHex',
+        'HmacSha256',
+        'ToHex',
+        'GetSignatureKey',
+        'UriEncode',
+        'BuildCanonicalPath',
+        'BuildAuthHeaders',
+        'BuildS3Uri',
+        'Invoke-S3HttpUpload'
+    ) | ForEach-Object {
+        $parallelS3UploadHelpers[$_] = Get-FunctionDefinitionText $_
+    }
+    $parallelS3UploadHelperList = $parallelS3UploadHelpers.GetEnumerator() | ForEach-Object {
+        [pscustomobject]@{ Name = $_.Key; Definition = $_.Value }
+    }
+}
+
 # Apply defaults from settings when caller did not specify overrides
 if ($elysiumSettings) {
     if (-not $PSBoundParameters.ContainsKey('StorageProvider')) {
@@ -1170,12 +1217,36 @@ switch ($StorageProvider.ToUpperInvariant()) {
         if ([string]::IsNullOrWhiteSpace($ContainerName)) { throw 'containerName is required for Azure uploads.' }
         if ([string]::IsNullOrWhiteSpace($SasToken)) { throw 'sasToken is required for Azure uploads.' }
 
-        Write-Host "Uploading shards to Azure Blob Storage container '$ContainerName'..."
-        foreach ($entry in $manifestShards) {
-            $localPath = Join-Path -Path $localShardRoot -ChildPath $entry.name
-            $remoteKey = Combine-StoragePath -Prefix $normalizedShardPrefix -Name $entry.name
-            Write-Host (" -> {0}" -f $remoteKey)
-            Upload-AzureBlob -Account $StorageAccountName -Container $ContainerName -Sas $SasToken -BlobName $remoteKey -FilePath $localPath -ContentType 'text/plain'
+        if ($parallelTransfersEnabled) {
+            Write-Host ("Uploading shards to Azure Blob Storage container '{0}' with up to {1} concurrent transfer(s)..." -f $ContainerName, $effectiveParallelTransfers)
+            $prefixForParallelUpload = if ([string]::IsNullOrWhiteSpace($normalizedShardPrefix)) { $null } else { $normalizedShardPrefix.Replace('\', '/').Trim('/') }
+            $manifestShards | ForEach-Object -Parallel {
+                param($entry)
+                try {
+                    foreach ($helper in $using:parallelAzureUploadHelperList) {
+                        if (-not (Get-Command $helper.Name -ErrorAction SilentlyContinue)) {
+                            Invoke-Expression $helper.Definition
+                        }
+                    }
+                    $localPath = Join-Path -Path $using:localShardRoot -ChildPath $entry.name
+                    $remoteKey = $entry.name.Replace('\', '/').TrimStart('/')
+                    if (-not [string]::IsNullOrWhiteSpace($using:prefixForParallelUpload)) {
+                        $remoteKey = $using:prefixForParallelUpload + '/' + $remoteKey
+                    }
+                    Upload-AzureBlob -Account $using:StorageAccountName -Container $using:ContainerName -Sas $using:SasToken -BlobName $remoteKey -FilePath $localPath -ContentType 'text/plain'
+                    Write-Host (" -> {0}" -f $remoteKey)
+                } catch {
+                    throw ("Shard '{0}': {1}" -f $entry.name, $_.Exception.Message)
+                }
+            } -ThrottleLimit $effectiveParallelTransfers
+        } else {
+            Write-Host "Uploading shards to Azure Blob Storage container '$ContainerName'..."
+            foreach ($entry in $manifestShards) {
+                $localPath = Join-Path -Path $localShardRoot -ChildPath $entry.name
+                $remoteKey = Combine-StoragePath -Prefix $normalizedShardPrefix -Name $entry.name
+                Write-Host (" -> {0}" -f $remoteKey)
+                Upload-AzureBlob -Account $StorageAccountName -Container $ContainerName -Sas $SasToken -BlobName $remoteKey -FilePath $localPath -ContentType 'text/plain'
+            }
         }
 
         Write-Host ("Uploading manifest to {0}" -f $normalizedManifestRemote)
@@ -1188,12 +1259,36 @@ switch ($StorageProvider.ToUpperInvariant()) {
             throw 's3AccessKeyId and s3SecretAccessKey are required for S3 uploads.'
         }
 
-        Write-Host "Uploading shards to S3 bucket '$S3BucketName'..."
-        foreach ($entry in $manifestShards) {
-            $localPath = Join-Path -Path $localShardRoot -ChildPath $entry.name
-            $remoteKey = Combine-StoragePath -Prefix $normalizedShardPrefix -Name $entry.name
-            Write-Host (" -> {0}" -f $remoteKey)
-            Invoke-S3HttpUpload -EndpointUrl $S3EndpointUrl -Bucket $S3BucketName -Key $remoteKey -FilePath $localPath -Region $S3Region -AccessKeyId $S3AccessKeyId -SecretAccessKey $S3SecretAccessKey -ForcePathStyle $S3ForcePathStyle -PayloadHash $entry.sha256 -ContentType 'text/plain'
+        if ($parallelTransfersEnabled) {
+            Write-Host ("Uploading shards to S3 bucket '{0}' with up to {1} concurrent transfer(s)..." -f $S3BucketName, $effectiveParallelTransfers)
+            $prefixForParallelUpload = if ([string]::IsNullOrWhiteSpace($normalizedShardPrefix)) { $null } else { $normalizedShardPrefix.Replace('\', '/').Trim('/') }
+            $manifestShards | ForEach-Object -Parallel {
+                param($entry)
+                try {
+                    foreach ($helper in $using:parallelS3UploadHelperList) {
+                        if (-not (Get-Command $helper.Name -ErrorAction SilentlyContinue)) {
+                            Invoke-Expression $helper.Definition
+                        }
+                    }
+                    $localPath = Join-Path -Path $using:localShardRoot -ChildPath $entry.name
+                    $remoteKey = $entry.name.Replace('\', '/').TrimStart('/')
+                    if (-not [string]::IsNullOrWhiteSpace($using:prefixForParallelUpload)) {
+                        $remoteKey = $using:prefixForParallelUpload + '/' + $remoteKey
+                    }
+                    Invoke-S3HttpUpload -EndpointUrl $using:S3EndpointUrl -Bucket $using:S3BucketName -Key $remoteKey -FilePath $localPath -Region $using:S3Region -AccessKeyId $using:S3AccessKeyId -SecretAccessKey $using:S3SecretAccessKey -ForcePathStyle $using:S3ForcePathStyle -PayloadHash $entry.sha256 -ContentType 'text/plain'
+                    Write-Host (" -> {0}" -f $remoteKey)
+                } catch {
+                    throw ("Shard '{0}': {1}" -f $entry.name, $_.Exception.Message)
+                }
+            } -ThrottleLimit $effectiveParallelTransfers
+        } else {
+            Write-Host "Uploading shards to S3 bucket '$S3BucketName'..."
+            foreach ($entry in $manifestShards) {
+                $localPath = Join-Path -Path $localShardRoot -ChildPath $entry.name
+                $remoteKey = Combine-StoragePath -Prefix $normalizedShardPrefix -Name $entry.name
+                Write-Host (" -> {0}" -f $remoteKey)
+                Invoke-S3HttpUpload -EndpointUrl $S3EndpointUrl -Bucket $S3BucketName -Key $remoteKey -FilePath $localPath -Region $S3Region -AccessKeyId $S3AccessKeyId -SecretAccessKey $S3SecretAccessKey -ForcePathStyle $S3ForcePathStyle -PayloadHash $entry.sha256 -ContentType 'text/plain'
+            }
         }
 
         Write-Host ("Uploading manifest to {0}" -f $normalizedManifestRemote)
