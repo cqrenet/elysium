@@ -100,11 +100,21 @@ do {
         }
         '2' {
             Write-Host "Testing Weak AD Passwords..."
-            & (Join-Path -Path $PSScriptRoot -ChildPath 'Test-WeakADPasswords.ps1')
+            $testScript = Join-Path -Path $PSScriptRoot -ChildPath 'Test-WeakADPasswords.ps1'
+            if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                & $testScript
+            } else {
+                Invoke-WindowsPowerShellScript -ScriptPath $testScript
+            }
         }
         '3' {
             Write-Host "Extracting and Sending Current Hashes..."
-            & (Join-Path -Path $PSScriptRoot -ChildPath 'Extract-NTHashes.ps1')
+            $extractScript = Join-Path -Path $PSScriptRoot -ChildPath 'Extract-NTHashes.ps1'
+            if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                & $extractScript
+            } else {
+                Invoke-WindowsPowerShellScript -ScriptPath $extractScript
+            }
         }
         '4' {
             Write-Host "Uninstalling..."
@@ -127,4 +137,17 @@ do {
 } while ($userSelection -ne '6')
 } finally {
     Stop-OrchestratorTranscript
+}
+function Invoke-WindowsPowerShellScript {
+    param([string]$ScriptPath)
+    $powershellCmd = Get-Command -Name 'powershell.exe' -ErrorAction SilentlyContinue
+    if (-not $powershellCmd) {
+        throw "Windows PowerShell (powershell.exe) was not found. Install it or run the script from a Desktop edition session."
+    }
+    $args = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath)
+    & $powershellCmd.Path @args
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw ("Windows PowerShell script '{0}' exited with code {1}." -f $ScriptPath, $exitCode)
+    }
 }

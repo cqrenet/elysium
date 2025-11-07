@@ -22,12 +22,6 @@ This script will connect to selected domain (defined in ElysiumSettings.txt) usi
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-[string]$commonHelper = Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.Common.ps1'
-if (-not (Test-Path -LiteralPath $commonHelper)) { throw "Common helper not found at $commonHelper" }
-. $commonHelper
-if ($PSVersionTable.PSEdition -ne 'Desktop') {
-    Restart-WithWindowsPowerShellIfAvailable -BoundParameters $PSBoundParameters -UnboundArguments $MyInvocation.UnboundArguments
-}
 
 $scriptRoot = $PSScriptRoot
 
