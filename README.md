@@ -12,7 +12,7 @@ Sensitive operations are confined only to the dedicated host. In the third step,
 ## Prerequisities
 * **Windows Host:** A Windows machine with PowerShell and DSInternals suite installed.
 * **Administrative Access:** Local admin privileges on the host for installation and updating.
-* **Domain Credentials:** A domain user account with Domain Admin privileges for each tested AD domain. This account should be active only during testing.
+* **Domain Credentials:** For weak-password testing (option 2), an account with the three replication rights (`Replicating Directory Changes`, `Replicating Directory Changes All`, `Replicating Directory Changes In Filtered Set`) on the domain naming context; Domain Admin also works but is not required. Keep this account disabled and enable only when running tests.
 * **Network Requirements:** A stable connection to the domain controller in each tested AD domain and internet access (specific hostnames/IP addresses will be provided).
 ---
 ## Operation
@@ -49,6 +49,14 @@ Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Pas
 The script will list domains in the same order as they appear in `ElysiumSettings.txt` and, after you pick one, prompt for the corresponding domain administrator password (the username is taken from the settings file).
 The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation.
 The KHDB file is consumed via binary search as a sorted hash list (plain text lines like `HASH:count`); ensure the file you place at `khdb.txt` keeps that ordering and omits stray blank lines.
+
+#### Least privileges for password-quality testing
+The DSInternals cmdlets (`Get-ADReplAccount`/`Test-PasswordQuality`) pull replicated password data, which requires DCSync-style rights. The account that runs option 2 does not have to be a Domain Admin if it has these permissions on the domain naming context:
+- `Replicating Directory Changes`
+- `Replicating Directory Changes All`
+- `Replicating Directory Changes In Filtered Set` (needed on 2008 R2+ to read password hashes)
+
+To delegate, enable Advanced Features in ADUC, right-click the domain, choose *Delegate Control…*, pick the service account, select *Create a custom task*, apply to *This object and all descendant objects*, and tick the three replication permissions above. Keep this account disabled and only activate it for scheduled tests.
 
 #### Optional usage beacon
 If you want to know the script was executed without collecting telemetry, set a pre-signed URL (for example, an S3 `PUT` URL) in `UsageBeaconUrl` inside `ElysiumSettings.txt`. When present, the weak-password script issues a single request as soon as it loads the settings. Only the script name, its version, a UTC timestamp, and the optional `UsageBeaconInstanceId` value are sent, and network failures never block the run. Choose the HTTP verb via `UsageBeaconMethod` (`GET`, `POST`, or `PUT`) and adjust the timeout with `UsageBeaconTimeoutSeconds` if your storage endpoint needs more time.
