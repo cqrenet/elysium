@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.4.1                               ##
+## Version: 1.4.3                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -92,7 +92,7 @@ function Invoke-UsageBeacon {
     if ($normalizedMethod -in @('POST', 'PUT')) {
         $payload = [ordered]@{
             script   = 'Test-WeakADPasswords'
-            version  = '1.4.1'
+            version  = '1.4.3'
             ranAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         }
         if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {
@@ -319,6 +319,44 @@ function Import-CompatModule {
             $params['UseWindowsPowerShell'] = $true
         }
     }
+    if ($Name -eq 'DSInternals') {
+        # DSInternals can emit a FIPS MD5 warning via Write-Error during import; treat it as non-fatal if the module loads.
+        $params['ErrorAction'] = 'SilentlyContinue'
+        $importErrors = @()
+        try {
+            Import-Module @params -ErrorVariable +importErrors
+        } catch {
+            $fqid = [string]$_.FullyQualifiedErrorId
+            $message = $_.Exception.Message
+            $isFipsBootstrapError = ($fqid -match 'DSInternals\.Bootstrap\.psm1') -and ($message -match 'Only FIPS certified cryptographic algorithms are enabled in \.NET')
+            if (-not $isFipsBootstrapError) { throw }
+            Write-Warning "DSInternals bootstrap reported FIPS restrictions. Continuing if the module is available."
+        }
+
+        $moduleLoaded = [bool](Get-Module -Name $Name -ErrorAction SilentlyContinue)
+        if (-not $moduleLoaded) {
+            $fipsErrorSeen = @($importErrors | Where-Object { $_.Exception.Message -match 'Only FIPS certified cryptographic algorithms are enabled in \.NET' }).Count -gt 0
+            if ($fipsErrorSeen) {
+                throw "DSInternals could not be loaded under current FIPS policy. Use a host/policy that allows required algorithms for DSInternals."
+            }
+            if ($importErrors.Count -gt 0) { throw $importErrors[0] }
+            throw "Failed to import module '$Name'."
+        }
+
+        $fipsErrors = @($importErrors | Where-Object { $_.Exception.Message -match 'Only FIPS certified cryptographic algorithms are enabled in \.NET' })
+        if ($fipsErrors.Count -gt 0) {
+            Write-Warning "DSInternals loaded under FIPS policy. MD5-dependent DSInternals checks may be limited."
+        }
+
+        $nonFipsErrors = @($importErrors | Where-Object { $_.Exception.Message -notmatch 'Only FIPS certified cryptographic algorithms are enabled in \.NET' })
+        if ($nonFipsErrors.Count -gt 0) {
+            Write-Warning ("DSInternals import reported non-fatal warning(s): {0}" -f $nonFipsErrors[0].Exception.Message)
+        }
+
+        Write-Verbose ("Imported module '{0}' (Core={1}, Windows={2})" -f $Name, $runningInPSCore, $onWindows)
+        return
+    }
+
     Import-Module @params
     Write-Verbose ("Imported module '{0}' (Core={1}, Windows={2})" -f $Name, $runningInPSCore, $onWindows)
 }

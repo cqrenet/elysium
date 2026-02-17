@@ -2,6 +2,18 @@
 
 ## 2026-02-17
 
+### Test-WeakADPasswords.ps1 v1.4.3
+Fixed:
+- Added explicit handling for `Microsoft.PowerShell.Commands.WriteErrorException,DSInternals.Bootstrap.psm1` so known FIPS bootstrap errors are downgraded to a controlled warning when possible, with a clear fail message if DSInternals cannot load under policy.
+
+## 2026-02-17
+
+### Test-WeakADPasswords.ps1 v1.4.2
+Fixed:
+- DSInternals module import now handles the known FIPS bootstrap warning as non-fatal when the module successfully loads, preventing repeated `SecurityError` noise during startup.
+
+## 2026-02-17
+
 ### Test-WeakADPasswords.ps1 v1.4.1
 Changed:
 - Added credential pre-validation against the selected domain controller before running `Get-ADReplAccount`, including retry prompts for rejected credentials.
