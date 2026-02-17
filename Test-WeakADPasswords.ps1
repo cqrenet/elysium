@@ -402,12 +402,42 @@ function Get-UserUPN {
 
 # (removed stray top-level loop; UPN enrichment happens during report generation below)
 
+function Get-ValidatedADCredential {
+    param (
+        [Parameter(Mandatory)][string]$DomainName,
+        [Parameter(Mandatory)][string]$Server,
+        [int]$MaxAttempts = 3
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $credential = Get-Credential -Message "Enter AD credentials with replication rights for $DomainName (attempt $attempt/$MaxAttempts)"
+        if ($null -eq $credential) {
+            throw "Credential prompt was cancelled."
+        }
+
+        try {
+            Get-ADDomain -Server $Server -Credential $credential -ErrorAction Stop | Out-Null
+            Write-Verbose ("Credential pre-check succeeded for '{0}' against '{1}'." -f $credential.UserName, $Server)
+            return $credential
+        } catch {
+            $message = $_.Exception.Message
+            if ($message -match 'rejected the client credentials|unknown user name|bad password|logon failure') {
+                Write-Warning ("Credentials were rejected for '{0}' (attempt {1}/{2})." -f $credential.UserName, $attempt, $MaxAttempts)
+                if ($attempt -lt $MaxAttempts) { continue }
+                throw "Credentials were rejected by domain controller '$Server' after $MaxAttempts attempts."
+            }
+            throw "Credential pre-check failed against '$Server': $message"
+        }
+    }
+}
+
 # Function to test for weak AD passwords
 function Test-WeakADPasswords {
     param (
         [hashtable]$DomainDetails,
         [string]$FilePath,
-        [bool]$CheckOnlyEnabledUsers = $false
+        [bool]$CheckOnlyEnabledUsers = $false,
+        [System.Management.Automation.PSCredential]$Credential
     )
 
     # User selects a domain
@@ -423,8 +453,17 @@ function Test-WeakADPasswords {
     $selectedDomain = $DomainDetails[$selection]
     Write-Verbose "Selected domain: $($selectedDomain.Name)"
 
-    # Prompt for DA credentials
-    $credential = Get-Credential -Message "Enter AD credentials with replication rights for $($selectedDomain.Name)"
+    if ([string]::IsNullOrWhiteSpace($selectedDomain["DC"])) {
+        Write-Error ("Domain '{0}' does not have a configured DC in ElysiumSettings.txt." -f $selectedDomain.Name)
+        return
+    }
+
+    if ($null -eq $Credential) {
+        $credential = Get-ValidatedADCredential -DomainName $selectedDomain.Name -Server $selectedDomain["DC"]
+    } else {
+        $credential = $Credential
+        Write-Verbose ("Using credential supplied by caller: {0}" -f $credential.UserName)
+    }
 
     # Performing the test
     Write-Verbose "Testing password quality for $($selectedDomain.Name)..."
@@ -440,7 +479,16 @@ function Test-WeakADPasswords {
         $testResults = $accounts | Test-PasswordQuality -WeakPasswordHashesSortedFile $FilePath
         Write-Verbose "Password quality test completed."
     } catch {
-        Write-Error ("An error occurred while testing passwords: {0}" -f $_.Exception.Message)
+        $message = $_.Exception.Message
+        if ($message -match 'Access is denied') {
+            Write-Error ("Access denied while reading replication data from '{0}' using '{1}'. Ensure this account has Replicating Directory Changes, Replicating Directory Changes All, and Replicating Directory Changes In Filtered Set on the domain." -f $selectedDomain["DC"], $credential.UserName)
+            return
+        }
+        if ($message -match 'rejected the client credentials|unknown user name|bad password|logon failure') {
+            Write-Error ("Credentials for '{0}' were rejected by '{1}'. Re-run and provide valid domain credentials." -f $credential.UserName, $selectedDomain["DC"])
+            return
+        }
+        Write-Error ("An error occurred while testing passwords: {0}" -f $message)
         return
     }
 

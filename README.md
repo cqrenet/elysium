@@ -46,7 +46,7 @@ Every run also emits a cleaned, DSInternals-friendly `khdb-clean.txt` beside the
 When `-ForcePlainText` is specified the script automatically keeps a checkpoint (default: `<output>/khdb.checkpoint.json`) and resumes from it on the next run so massive inputs don’t restart from scratch. Use `-CheckpointPath` to relocate that file or `-NoCheckpoint` to disable the behavior entirely.
 ### Test Weak AD passwords
 Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Passwords).
-The script will list domains in the same order as they appear in `ElysiumSettings.txt` and, after you pick one, prompt for the corresponding domain administrator password (the username is taken from the settings file).
+The script lists domains in the same order as they appear in `ElysiumSettings.txt`. After you pick one, it prompts for credentials and validates them against the selected domain controller before running the password-quality test.
 The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation.
 The KHDB file is consumed via binary search as a sorted hash list (plain text lines like `HASH:count`); ensure the file you place at `khdb.txt` keeps that ordering and omits stray blank lines.
 
@@ -57,6 +57,14 @@ The DSInternals cmdlets (`Get-ADReplAccount`/`Test-PasswordQuality`) pull replic
 - `Replicating Directory Changes In Filtered Set` (needed on 2008 R2+ to read password hashes)
 
 To delegate, enable Advanced Features in ADUC, right-click the domain, choose *Delegate Control…*, pick the service account, select *Create a custom task*, apply to *This object and all descendant objects*, and tick the three replication permissions above. Keep this account disabled and only activate it for scheduled tests.
+
+#### Common errors
+- `The server has rejected the client credentials.` or `Credentials ... were rejected`:
+  The supplied username/password is invalid for the selected domain controller, or the session is not running in the expected domain context. Re-run and provide valid domain credentials.
+- `Get-ADReplAccount: Access is denied`:
+  Credentials are valid, but the account does not have the three replication permissions listed above.
+- `Only FIPS certified cryptographic algorithms are enabled in .NET`:
+  This warning comes from DSInternals under FIPS-enforced environments. Hash-quality operations that rely on MD5 may be limited.
 
 #### Optional usage beacon
 If you want to know the script was executed without collecting telemetry, set a pre-signed URL (for example, an S3 `PUT` URL) in `UsageBeaconUrl` inside `ElysiumSettings.txt`. When present, the weak-password script issues a single request as soon as it loads the settings. Only the script name, its version, a UTC timestamp, and the optional `UsageBeaconInstanceId` value are sent, and network failures never block the run. Choose the HTTP verb via `UsageBeaconMethod` (`GET`, `POST`, or `PUT`) and adjust the timeout with `UsageBeaconTimeoutSeconds` if your storage endpoint needs more time.
