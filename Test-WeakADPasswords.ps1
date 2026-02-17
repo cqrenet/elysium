@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.4.3                               ##
+## Version: 1.4.4                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -92,7 +92,7 @@ function Invoke-UsageBeacon {
     if ($normalizedMethod -in @('POST', 'PUT')) {
         $payload = [ordered]@{
             script   = 'Test-WeakADPasswords'
-            version  = '1.4.3'
+            version  = '1.4.4'
             ranAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         }
         if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {
@@ -215,6 +215,28 @@ $isServerOS = $onWindows -and ($osProductType -ne 1)
 
 if ($runningInPSCore -and -not $onWindows) {
     throw 'This script requires Windows when running under PowerShell 7 (AD/DSInternals are Windows-only).'
+}
+
+function Test-IsFipsPolicyEnabled {
+    if (-not $onWindows) { return $false }
+    try {
+        $fipsReg = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy' -Name Enabled -ErrorAction Stop
+        return ([int]$fipsReg.Enabled -eq 1)
+    } catch {
+        return $false
+    }
+}
+
+if (Test-IsFipsPolicyEnabled) {
+    throw @"
+FIPS policy is enabled on this host (HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy\Enabled = 1).
+Test-WeakADPasswords uses DSInternals/AD replication operations that are not fully compatible with this policy in this environment.
+
+Remediation:
+1. Run this script from a dedicated non-FIPS workstation/jump host.
+2. If approved by your security policy, temporarily disable local FIPS policy for this host, run the test, then re-enable it.
+3. If FIPS must remain enforced, use an alternative fully FIPS-validated workflow/tool for weak password assessment.
+"@
 }
 
 function Test-IsAdmin {

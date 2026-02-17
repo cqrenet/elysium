@@ -2,6 +2,12 @@
 
 ## 2026-02-17
 
+### Test-WeakADPasswords.ps1 v1.4.4
+Changed:
+- Added startup FIPS policy detection (`HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy\Enabled`) with fail-fast behavior and explicit remediation steps to avoid opaque DSInternals runtime failures.
+
+## 2026-02-17
+
 ### Test-WeakADPasswords.ps1 v1.4.3
 Fixed:
 - Added explicit handling for `Microsoft.PowerShell.Commands.WriteErrorException,DSInternals.Bootstrap.psm1` so known FIPS bootstrap errors are downgraded to a controlled warning when possible, with a clear fail message if DSInternals cannot load under policy.
