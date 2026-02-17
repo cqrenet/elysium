@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-02-17
+
+### Test-WeakADPasswords.ps1 v1.4.1
+Changed:
+- Added credential pre-validation against the selected domain controller before running `Get-ADReplAccount`, including retry prompts for rejected credentials.
+- Improved error diagnostics to distinguish invalid credentials from missing replication permissions (`Access is denied`).
+- Added optional `-Credential` parameter to `Test-WeakADPasswords` for callers that need to provide credentials non-interactively.
+
+### README.md
+Changed:
+- Updated weak-password testing documentation to reflect credential pre-check behavior and added a short troubleshooting section for common authentication/permissions failures.
+
 ## 2025-10-30
 
 ### Update-KHDB.ps1 v2.0.0

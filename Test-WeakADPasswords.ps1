@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.4.0                               ##
+## Version: 1.4.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -92,7 +92,7 @@ function Invoke-UsageBeacon {
     if ($normalizedMethod -in @('POST', 'PUT')) {
         $payload = [ordered]@{
             script   = 'Test-WeakADPasswords'
-            version  = '1.3.3'
+            version  = '1.4.1'
             ranAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         }
         if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {
