@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Prepare-KHDBStorage.ps1                ##
-## Version: 1.1.0                               ##
+## Version: 1.1.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -385,7 +385,7 @@ function Split-KhdbIntoShards {
         [psobject]$ResumeState
     )
 
-    $hashRegex = '^[0-9A-Fa-f]{32}$'
+    $hashRegex = '^[0-9A-Fa-f]{32}(:\d+)?$'
     $encoding = New-Object System.Text.UTF8Encoding($false)
     $ShardRoot = [System.IO.Path]::GetFullPath($ShardRoot)
     Ensure-Directory $ShardRoot
@@ -402,6 +402,7 @@ function Split-KhdbIntoShards {
         TotalLines = 0L
         InvalidLines = 0L
         SkippedLines = 0L
+        LegacyLines = 0L
         InvalidSamples = New-Object System.Collections.Generic.List[string]
     }
 
@@ -596,13 +597,13 @@ function Split-KhdbIntoShards {
         if (-not [string]::IsNullOrWhiteSpace($prefix)) {
             $hashPortion = ($prefix.Trim() + $hashPortion)
         }
-        if ($hashPortion.Length -ne 32 -or $hashPortion -notmatch $hashRegex) {
+        if ($hashPortion.Length -ne 32 -or $hashPortion -notmatch '^[0-9A-Fa-f]{32}$') {
             $match = [regex]::Match($hashPortion, '[0-9A-Fa-f]{32}')
             if ($match.Success) {
                 $hashPortion = $match.Value
             }
         }
-        if ($hashPortion.Length -ne 32 -or $hashPortion -notmatch $hashRegex) {
+        if ($hashPortion.Length -ne 32 -or $hashPortion -notmatch '^[0-9A-Fa-f]{32}$') {
             $meta.InvalidLines++
             if ($meta.InvalidSamples.Count -lt $maxInvalidSamples) {
                 [void]$meta.InvalidSamples.Add($trimmed)
@@ -625,17 +626,14 @@ function Split-KhdbIntoShards {
         $normalizedHash = $hashPortion.ToUpperInvariant()
         $countValue = 0
         if ($parts.Count -gt 1) {
+            $meta.LegacyLines++
             $countText = $parts[1].Trim()
             if (-not [string]::IsNullOrWhiteSpace($countText)) {
                 $null = [int]::TryParse($countText, [ref]$countValue)
                 if ($countValue -lt 0) { $countValue = 0 }
             }
         }
-        $normalizedLine = if ($parts.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
-            "{0}:{1}" -f $normalizedHash, $parts[1].Trim()
-        } else {
-            $normalizedHash
-        }
+        $normalizedLine = $normalizedHash
 
         $prefixKey = $normalizedHash.Substring(0, $PrefixLength).ToLowerInvariant()
         if (-not $shardStates.ContainsKey($prefixKey)) {
@@ -828,6 +826,7 @@ function Split-KhdbIntoShards {
         TotalLines   = [long]$meta.TotalLines
         InvalidLines = [long]$meta.InvalidLines
         SkippedLines = [long]$meta.SkippedLines
+        LegacyCount = [long]$meta.LegacyLines
         InvalidSamples = $meta.InvalidSamples.ToArray()
         InvalidOutputPath = if ($meta.InvalidLines -gt 0 -and $InvalidOutputPath) { $InvalidOutputPath } else { $null }
     }
@@ -1131,6 +1130,9 @@ if ($UploadOnly) {
     $invalidCount = [long]$splitResult.InvalidLines
     $skippedCount = [long]$splitResult.SkippedLines
     Write-Host ("Input summary: {0} non-empty line(s) -> {1} valid hash(es), {2} invalid entr(y/ies), {3} skipped." -f $totalLines, $totalEntries, $invalidCount, $skippedCount)
+    if ([long]$splitResult.LegacyCount -gt 0) {
+        Write-Warning ("Detected {0} legacy HASH:count entries. Output shards and khdb-clean.txt were normalized to hash-only lines for DSInternals compatibility." -f [long]$splitResult.LegacyCount)
+    }
     if ($invalidCount -gt 0) {
         if ($splitResult.InvalidOutputPath) {
             Write-Warning ("Invalid lines saved to {0}" -f $splitResult.InvalidOutputPath)

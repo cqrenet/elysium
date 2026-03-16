@@ -48,7 +48,7 @@ When `-ForcePlainText` is specified the script automatically keeps a checkpoint 
 Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Passwords).
 The script lists domains in the same order as they appear in `ElysiumSettings.txt`. After you pick one, it prompts for credentials and validates them against the selected domain controller before running the password-quality test.
 The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation.
-The KHDB file is consumed via binary search as a sorted hash list (plain text lines like `HASH:count`); ensure the file you place at `khdb.txt` keeps that ordering and omits stray blank lines.
+The KHDB file is consumed by DSInternals as a sorted hash list with one NT hash per line (for example `HASH`). Do not include `:count` suffixes in `khdb.txt`; the packaging and update scripts normalize legacy `HASH:count` input to the hash-only format automatically.
 
 #### Least privileges for password-quality testing
 The DSInternals cmdlets (`Get-ADReplAccount`/`Test-PasswordQuality`) pull replicated password data, which requires DCSync-style rights. The account that runs option 2 does not have to be a Domain Admin if it has these permissions on the domain naming context:

@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Update-KHDB.ps1                        ##
-## Version: 2.1.0                               ##
+## Version: 2.1.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -76,7 +76,7 @@ function New-HttpClient {
     Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds(600)
-    $client.DefaultRequestHeaders.UserAgent.ParseAdd('Elysium/2.0 (+Update-KHDB)')
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd('Elysium/2.1.1 (+Update-KHDB)')
     return $client
 }
 
@@ -432,6 +432,22 @@ function Validate-Manifest {
     }
 }
 
+function Convert-KHDBLineToHash {
+    param(
+        [Parameter(Mandatory)][string]$Line,
+        [string]$SourceName,
+        [int]$LineNumber
+    )
+
+    $trimmed = $Line.Trim()
+    if ($trimmed.Length -eq 0) { return $null }
+    if ($trimmed -notmatch '^[0-9A-Fa-f]{32}(:\d+)?$') {
+        throw ("Invalid KHDB content in '{0}' at line {1}: '{2}'." -f $SourceName, $LineNumber, $trimmed)
+    }
+
+    return ($trimmed.Split(':', 2)[0]).ToUpperInvariant()
+}
+
 function Merge-ShardsToFile {
     param(
         [psobject]$Manifest,
@@ -441,6 +457,7 @@ function Merge-ShardsToFile {
 
     $encoding = New-Object System.Text.UTF8Encoding($false)
     $writer = New-Object System.IO.StreamWriter($TargetPath, $false, $encoding)
+    $previousHash = $null
     try {
         foreach ($entry in ($Manifest.shards | Sort-Object name)) {
             $relative = [string]$entry.name
@@ -449,12 +466,18 @@ function Merge-ShardsToFile {
                 throw "Missing shard on disk: $relative"
             }
             $reader = New-Object System.IO.StreamReader($shardPath, [System.Text.Encoding]::UTF8, $true)
+            $lineNumber = 0
             try {
                 while (($line = $reader.ReadLine()) -ne $null) {
-                    $trimmed = $line.Trim()
-                    if ($trimmed.Length -gt 0) {
-                        $writer.WriteLine($trimmed)
+                    $lineNumber++
+                    $normalizedHash = Convert-KHDBLineToHash -Line $line -SourceName $relative -LineNumber $lineNumber
+                    if ($null -eq $normalizedHash) { continue }
+                    if ($previousHash -and $normalizedHash -lt $previousHash) {
+                        throw "Shard merge would produce an unsorted KHDB file at '$relative' line $lineNumber."
                     }
+                    if ($normalizedHash -eq $previousHash) { continue }
+                    $writer.WriteLine($normalizedHash)
+                    $previousHash = $normalizedHash
                 }
             } finally {
                 $reader.Dispose()
@@ -470,7 +493,7 @@ function Validate-KHDBFile {
 
     if (-not (Test-Path -LiteralPath $Path)) { throw "Validation failed: $Path not found." }
 
-    $regex = '^[0-9A-Fa-f]{32}(:\d+)?$'
+    $regex = '^[0-9A-Fa-f]{32}$'
     $lineNumber = 0
     $previous = $null
     $duplicates = 0

@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.4.4                               ##
+## Version: 1.4.5                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -92,7 +92,7 @@ function Invoke-UsageBeacon {
     if ($normalizedMethod -in @('POST', 'PUT')) {
         $payload = [ordered]@{
             script   = 'Test-WeakADPasswords'
-            version  = '1.4.4'
+            version  = '1.4.5'
             ranAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         }
         if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {
@@ -462,6 +462,105 @@ function Get-UserUPN {
 
 # (removed stray top-level loop; UPN enrichment happens during report generation below)
 
+function Resolve-DSInternalsWeakHashFile {
+    param(
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Weak password hashes file not found at '$Path'."
+    }
+
+    $compatibleRegex = '^[0-9A-F]{32}$'
+    $legacyRegex = '^[0-9A-Fa-f]{32}(:\d+)?$'
+    $lineNumber = 0
+    $previousHash = $null
+    $duplicateCount = 0
+    $legacyEntryCount = 0
+    $needsNormalization = $false
+    $reader = $null
+
+    try {
+        $reader = New-Object System.IO.StreamReader($Path, [System.Text.Encoding]::UTF8, $true)
+        while (($line = $reader.ReadLine()) -ne $null) {
+            $lineNumber++
+            $trimmed = $line.Trim()
+            if ($trimmed.Length -eq 0) { continue }
+
+            if ($trimmed -notmatch $legacyRegex) {
+                throw ("Weak password hashes file '{0}' contains invalid content at line {1}: '{2}'." -f $Path, $lineNumber, $trimmed)
+            }
+
+            if ($trimmed -notmatch $compatibleRegex) {
+                $needsNormalization = $true
+                if ($trimmed.Contains(':')) { $legacyEntryCount++ }
+            }
+
+            $normalizedHash = ($trimmed.Split(':', 2)[0]).ToUpperInvariant()
+            if ($line -cne $trimmed -or $trimmed -cne $normalizedHash) {
+                $needsNormalization = $true
+            }
+
+            if ($null -ne $previousHash) {
+                if ($normalizedHash -lt $previousHash) {
+                    throw "Weak password hashes file '$Path' is not sorted alphabetically at line $lineNumber."
+                }
+                if ($normalizedHash -eq $previousHash) {
+                    $duplicateCount++
+                    $needsNormalization = $true
+                }
+            }
+
+            $previousHash = $normalizedHash
+        }
+    } finally {
+        if ($reader) { $reader.Dispose() }
+    }
+
+    if (-not $needsNormalization) {
+        return [pscustomobject]@{
+            Path        = $Path
+            IsTemporary = $false
+        }
+    }
+
+    $tmpPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ('elysium-khdb-' + [System.Guid]::NewGuid().ToString() + '.txt'))
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $reader = $null
+    $writer = $null
+    $lastWrittenHash = $null
+
+    try {
+        $reader = New-Object System.IO.StreamReader($Path, [System.Text.Encoding]::UTF8, $true)
+        $writer = New-Object System.IO.StreamWriter($tmpPath, $false, $encoding)
+
+        while (($line = $reader.ReadLine()) -ne $null) {
+            $trimmed = $line.Trim()
+            if ($trimmed.Length -eq 0) { continue }
+
+            $normalizedHash = ($trimmed.Split(':', 2)[0]).ToUpperInvariant()
+            if ($normalizedHash -eq $lastWrittenHash) { continue }
+
+            $writer.WriteLine($normalizedHash)
+            $lastWrittenHash = $normalizedHash
+        }
+    } finally {
+        if ($reader) { $reader.Dispose() }
+        if ($writer) { $writer.Dispose() }
+    }
+
+    $normalizationReasons = @()
+    if ($legacyEntryCount -gt 0) { $normalizationReasons += "$legacyEntryCount legacy HASH:count entries" }
+    if ($duplicateCount -gt 0) { $normalizationReasons += "$duplicateCount duplicate hashes" }
+    if ($normalizationReasons.Count -eq 0) { $normalizationReasons += 'format normalization' }
+    Write-Warning ("Normalized weak password hashes file for DSInternals compatibility ({0}). Temporary file: {1}" -f ($normalizationReasons -join ', '), $tmpPath)
+
+    return [pscustomobject]@{
+        Path        = $tmpPath
+        IsTemporary = $true
+    }
+}
+
 function Get-ValidatedADCredential {
     param (
         [Parameter(Mandatory)][string]$DomainName,
@@ -527,7 +626,9 @@ function Test-WeakADPasswords {
 
     # Performing the test
     Write-Verbose "Testing password quality for $($selectedDomain.Name)..."
+    $resolvedHashFile = $null
     try {
+        $resolvedHashFile = Resolve-DSInternalsWeakHashFile -Path $FilePath
         $accounts = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credential
         if ($CheckOnlyEnabledUsers) {
             Write-Verbose "Filtering to only enabled users per settings."
@@ -536,7 +637,7 @@ function Test-WeakADPasswords {
                 if ($_.PSObject.Properties.Name -contains 'Enabled') { $_.Enabled } else { $true }
             }
         }
-        $testResults = $accounts | Test-PasswordQuality -WeakPasswordHashesSortedFile $FilePath
+        $testResults = $accounts | Test-PasswordQuality -WeakPasswordHashesSortedFile $resolvedHashFile.Path
         Write-Verbose "Password quality test completed."
     } catch {
         $message = $_.Exception.Message
@@ -550,6 +651,10 @@ function Test-WeakADPasswords {
         }
         Write-Error ("An error occurred while testing passwords: {0}" -f $message)
         return
+    } finally {
+        if ($resolvedHashFile -and $resolvedHashFile.IsTemporary -and (Test-Path -LiteralPath $resolvedHashFile.Path)) {
+            try { Remove-Item -LiteralPath $resolvedHashFile.Path -Force -ErrorAction Stop } catch { }
+        }
     }
 
     # Report generation with dynamic content and UPNs

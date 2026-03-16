@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-03-16
+
+### Test-WeakADPasswords.ps1 v1.4.5
+Fixed:
+- Normalizes legacy `HASH:count` KHDB files into a temporary hash-only list before calling `DSInternals`, so dictionary matches no longer fail silently when clients have older database content.
+- Warns when KHDB normalization is required instead of leaving the weak-password match section empty without explanation.
+
+### Update-KHDB.ps1 v2.1.1
+Fixed:
+- Rebuilds the merged local `khdb.txt` as a DSInternals-compatible hash-only file even when upstream shards still contain legacy `HASH:count` lines.
+- Tightened KHDB merge validation so malformed shard content is surfaced during update rather than producing a silently unusable weak-password database.
+
+### Prepare-KHDBStorage.ps1 v1.1.1
+Fixed:
+- Accepts legacy `HASH:count` source input but writes deduplicated hash-only shards for downstream DSInternals consumers.
+
+### README.md
+Changed:
+- Corrected the KHDB format documentation to require one NT hash per line and documented the automatic legacy-format normalization.
+
 ## 2026-02-17
 
 ### Test-WeakADPasswords.ps1 v1.4.4
