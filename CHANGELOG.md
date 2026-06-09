@@ -6,6 +6,16 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.3.0] — 2026-06-09
+
+### Added
+- `Test-WeakADPasswords.ps1` now checks the installed DSInternals version at startup:
+  - **v6.2** (unsigned) is flagged with a warning explaining that unsigned native DLLs are blocked and replication will fail. Remediation: `Update-Module DSInternals`.
+  - **Below v7.0** triggers an interactive prompt offering to run `Update-Module DSInternals -Force` automatically. If accepted, the script updates the module and exits cleanly so the operator can re-run with the new version loaded.
+  - v7.0+ is required because it fixes intermittent CRC errors mid-replication and `Test-PasswordQuality` result truncation bugs.
+
+---
+
 ## [2.2.5] — 2026-06-09
 
 ### Fixed

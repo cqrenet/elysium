@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 2.2.5                               ##
+## Version: 2.3.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -389,6 +389,26 @@ try {
         Import-CompatModule -Name 'DSInternals'
     } else {
         throw "Failed to import DSInternals module. Try installing from PSGallery or placing it under '$env:ProgramFiles\WindowsPowerShell\Modules'."
+    }
+}
+
+# Version check: v6.2 was unsigned (blocks native DLLs, causes replication failures);
+# v7.0 fixes intermittent CRC errors mid-replication and Test-PasswordQuality result truncation.
+$dsInternalsVersion = (Get-Module -Name DSInternals).Version
+$minimumVersion = [version]'7.0'
+$unsignedVersion = [version]'6.2'
+if ($dsInternalsVersion -eq $unsignedVersion) {
+    Write-Warning ("DSInternals {0} is not digitally signed, which blocks its native DLLs and causes replication failures. Update to v7.0+: Update-Module DSInternals" -f $dsInternalsVersion)
+} elseif ($dsInternalsVersion -lt $minimumVersion) {
+    $resp = Read-Host ("DSInternals {0} is installed; v7.0 fixes intermittent replication CRC errors and result truncation. Update now? [Y/N]" -f $dsInternalsVersion)
+    if ($resp -match '^(?i:y|yes)$') {
+        try {
+            Update-Module -Name DSInternals -Force -ErrorAction Stop
+            Write-Host '[+] DSInternals updated. Please re-run the script to load the new version.'
+            exit 0
+        } catch {
+            Write-Warning ("DSInternals update failed: {0}" -f $_.Exception.Message)
+        }
     }
 }
 
