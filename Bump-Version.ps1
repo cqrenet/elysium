@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Bump-Version.ps1                       ##
-## Version: 2.4.1                               ##
+## Version: 2.4.2                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -149,7 +149,7 @@ if (-not $SkipChangelog) {
 
 ---
 
-## [$NewVersion] — $today
+## [$NewVersion] - $today
 
 ### Changed
 - (describe your change here)

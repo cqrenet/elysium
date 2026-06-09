@@ -6,6 +6,13 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.4.2] — 2026-06-09
+
+### Fixed
+- Replaced UTF-8 em-dashes (`\u2014`) in `Elysium.Common.ps1` and `Bump-Version.ps1` with ASCII hyphens. On Windows PowerShell without a UTF-8 BOM, the three-byte em-dash sequence was misinterpreted as containing a quote character, causing cascading parse errors (unexpected token, missing closing `)`/`}`/`catch`, etc.).
+
+---
+
 ## [2.4.1] — 2026-06-09
 
 ### Fixed

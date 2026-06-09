@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.4.1'
+$script:ElysiumVersion = '2.4.2'
 
 function Invoke-RestartWithExecutable {
     param(
@@ -342,7 +342,7 @@ function Test-ReplicationPermissions {
         [void]$callerSids.Add($adUser.SID.Value)
 
         # tokenGroups is a constructed attribute containing all SIDs in the user's token,
-        # including nested group memberships — more reliable than walking MemberOf recursively
+        # including nested group memberships - more reliable than walking MemberOf recursively
         $userDe = New-Object System.DirectoryServices.DirectoryEntry(
             "LDAP://$Server/$([System.Uri]::EscapeDataString($adUser.DistinguishedName))",
             $Credential.UserName,
@@ -364,7 +364,7 @@ function Test-ReplicationPermissions {
         $domainSidStr = $adUser.SID.Value.Substring(0, $adUser.SID.Value.LastIndexOf('-'))
         $protectedUsersSid = "$domainSidStr-525"
         if ($callerSids.Contains($protectedUsersSid)) {
-            Write-Warning ("Account '{0}' is a member of Protected Users. This group restricts Kerberos delegation and RC4 authentication that DSInternals requires for DRS replication — access will be denied regardless of assigned rights." -f $Credential.UserName)
+            Write-Warning ("Account '{0}' is a member of Protected Users. This group restricts Kerberos delegation and RC4 authentication that DSInternals requires for DRS replication - access will be denied regardless of assigned rights." -f $Credential.UserName)
         }
     } catch {
         Write-Warning ("Could not resolve account SIDs for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
@@ -392,7 +392,7 @@ function Test-ReplicationPermissions {
         $aceExistsForGuid = $false
         foreach ($ace in $acl) {
             if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-            # InheritOnly ACEs apply to child objects only — the domain root itself is not covered
+            # InheritOnly ACEs apply to child objects only - the domain root itself is not covered
             if ([bool]($ace.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
             $rights        = $ace.ActiveDirectoryRights
             $hasExtended   = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
@@ -441,9 +441,9 @@ function Test-DCClockSkew {
             [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
         $skewSeconds = [Math]::Abs(([datetime]::UtcNow - $dcTime).TotalSeconds)
         if ($skewSeconds -gt 300) {
-            Write-Warning ("Clock skew of {0:N0}s with '{1}' exceeds Kerberos limit of 300s — authentication will fail. Sync the clock: w32tm /resync /force" -f $skewSeconds, $Server)
+            Write-Warning ("Clock skew of {0:N0}s with '{1}' exceeds Kerberos limit of 300s - authentication will fail. Sync the clock: w32tm /resync /force" -f $skewSeconds, $Server)
         } elseif ($skewSeconds -gt 60) {
-            Write-Warning ("Clock skew of {0:N0}s detected with '{1}'. Kerberos allows up to 300s — approaching the limit." -f $skewSeconds, $Server)
+            Write-Warning ("Clock skew of {0:N0}s detected with '{1}'. Kerberos allows up to 300s - approaching the limit." -f $skewSeconds, $Server)
         } else {
             Write-Host ("[+] Clock skew with '{0}': {1:N0}s (OK)." -f $Server, $skewSeconds)
         }
