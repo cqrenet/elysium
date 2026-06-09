@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.3.0'
+$script:ElysiumVersion = '2.4.0'
 
 function Invoke-RestartWithExecutable {
     param(
@@ -338,7 +338,7 @@ function Test-ReplicationPermissions {
     try {
         $samName = $Credential.UserName -replace '^.*\\', ''
         $adUser = Get-ADUser -Identity $samName -Server $Server -Credential $Credential `
-            -Properties SID, DistinguishedName -ErrorAction Stop
+            -Properties SID, DistinguishedName, adminCount -ErrorAction Stop
         [void]$callerSids.Add($adUser.SID.Value)
 
         # tokenGroups is a constructed attribute containing all SIDs in the user's token,
@@ -352,6 +352,19 @@ function Test-ReplicationPermissions {
         foreach ($sidBytes in $userDe.Properties['tokenGroups']) {
             $sid = New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)
             [void]$callerSids.Add($sid.Value)
+        }
+
+        # adminCount=1 means SDProp is managing this account; it runs every 60 min and can
+        # silently revert replication rights or group memberships granted to the account
+        if ($adUser.adminCount -eq 1) {
+            Write-Warning ("Account '{0}' has adminCount=1 (SDProp-protected). It is or was a member of a privileged group. SDProp runs every 60 minutes and may silently revert replication rights or group memberships on this account." -f $Credential.UserName)
+        }
+
+        # Protected Users group (RID 525) blocks the Kerberos mechanisms DSInternals uses for DRS
+        $domainSidStr = $adUser.SID.Value.Substring(0, $adUser.SID.Value.LastIndexOf('-'))
+        $protectedUsersSid = "$domainSidStr-525"
+        if ($callerSids.Contains($protectedUsersSid)) {
+            Write-Warning ("Account '{0}' is a member of Protected Users. This group restricts Kerberos delegation and RC4 authentication that DSInternals requires for DRS replication — access will be denied regardless of assigned rights." -f $Credential.UserName)
         }
     } catch {
         Write-Warning ("Could not resolve account SIDs for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
@@ -408,4 +421,33 @@ function Test-ReplicationPermissions {
     }
 
     Write-Host ("[+] Replication permissions verified for '{0}'." -f $Credential.UserName)
+}
+
+function Test-DCClockSkew {
+    param(
+        [Parameter(Mandatory)][string]$Server,
+        [Parameter(Mandatory)][System.Management.Automation.PSCredential]$Credential
+    )
+    try {
+        $rootDse = New-Object System.DirectoryServices.DirectoryEntry(
+            "LDAP://$Server/RootDSE",
+            $Credential.UserName,
+            $Credential.GetNetworkCredential().Password
+        )
+        $dcTimeStr = $rootDse.Properties['currentTime'][0]
+        $dcTime = [datetime]::ParseExact(
+            $dcTimeStr, 'yyyyMMddHHmmss.0Z',
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
+        $skewSeconds = [Math]::Abs(([datetime]::UtcNow - $dcTime).TotalSeconds)
+        if ($skewSeconds -gt 300) {
+            Write-Warning ("Clock skew of {0:N0}s with '{1}' exceeds Kerberos limit of 300s — authentication will fail. Sync the clock: w32tm /resync /force" -f $skewSeconds, $Server)
+        } elseif ($skewSeconds -gt 60) {
+            Write-Warning ("Clock skew of {0:N0}s detected with '{1}'. Kerberos allows up to 300s — approaching the limit." -f $skewSeconds, $Server)
+        } else {
+            Write-Host ("[+] Clock skew with '{0}': {1:N0}s (OK)." -f $Server, $skewSeconds)
+        }
+    } catch {
+        Write-Warning ("Could not check clock skew against '{0}': {1}" -f $Server, $_.Exception.Message)
+    }
 }

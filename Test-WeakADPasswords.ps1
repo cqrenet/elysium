@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 2.3.0                               ##
+## Version: 2.4.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -398,12 +398,14 @@ $dsInternalsVersion = (Get-Module -Name DSInternals).Version
 $minimumVersion = [version]'7.0'
 $unsignedVersion = [version]'6.2'
 if ($dsInternalsVersion -eq $unsignedVersion) {
-    Write-Warning ("DSInternals {0} is not digitally signed, which blocks its native DLLs and causes replication failures. Update to v7.0+: Update-Module DSInternals" -f $dsInternalsVersion)
+    Write-Warning ("DSInternals {0} is not digitally signed, which blocks its native DLLs and causes replication failures. Update to v7.0+: Install-Module DSInternals -Force -AllowClobber" -f $dsInternalsVersion)
 } elseif ($dsInternalsVersion -lt $minimumVersion) {
     $resp = Read-Host ("DSInternals {0} is installed; v7.0 fixes intermittent replication CRC errors and result truncation. Update now? [Y/N]" -f $dsInternalsVersion)
     if ($resp -match '^(?i:y|yes)$') {
         try {
-            Update-Module -Name DSInternals -Force -ErrorAction Stop
+            # Install-Module -Force is used instead of Update-Module to avoid a PowerShellGet bug
+            # where null PublishedDate metadata causes "cannot convert null to type system.datetime"
+            Install-Module -Name DSInternals -Force -AllowClobber -ErrorAction Stop
             Write-Host '[+] DSInternals updated. Please re-run the script to load the new version.'
             exit 0
         } catch {
@@ -602,9 +604,10 @@ function Test-WeakADPasswords {
         Write-Verbose ("Using credential supplied by caller: {0}" -f $credential.UserName)
     }
 
-    # Verify the account has the three replication extended rights before attempting DCSync
+    # Pre-flight checks before attempting DCSync
     try {
         $domainInfo = Get-ADDomain -Server $selectedDomain["DC"] -Credential $credential -ErrorAction Stop
+        Test-DCClockSkew -Server $selectedDomain["DC"] -Credential $credential
         Test-ReplicationPermissions -DomainDN $domainInfo.DistinguishedName `
             -Server $selectedDomain["DC"] -Credential $credential
     } catch {

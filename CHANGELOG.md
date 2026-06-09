@@ -6,6 +6,18 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.4.0] — 2026-06-09
+
+### Added
+- **DC clock skew pre-flight check** (`Test-DCClockSkew` in `Elysium.Common.ps1`): compares the local machine clock against the target DC's `RootDSE.currentTime` before attempting DCSync. Warns if skew exceeds 300s (Kerberos hard limit) or 60s (approaching limit), and provides the `w32tm /resync /force` remediation command.
+- **SDProp protection warning** in `Test-ReplicationPermissions`: detects `adminCount=1` on the service account and warns that SDProp runs every 60 minutes and may silently revert replication rights or group memberships.
+- **Protected Users group warning** in `Test-ReplicationPermissions`: detects membership in the Protected Users group (RID 525) and warns that it restricts Kerberos delegation and RC4 authentication required by DSInternals for DRS replication.
+
+### Fixed
+- DSInternals auto-update flow now uses `Install-Module -Force -AllowClobber` instead of `Update-Module` to avoid a PowerShellGet bug where null `PublishedDate` metadata causes "cannot convert null to type system.datetime".
+
+---
+
 ## [2.3.0] — 2026-06-09
 
 ### Added
