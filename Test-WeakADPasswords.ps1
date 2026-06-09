@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 2.2.4                               ##
+## Version: 2.2.5                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -354,7 +354,10 @@ function Import-CompatModule {
         if ($nonFipsErrors.Count -gt 0) {
             $nonFipsMsg = $nonFipsErrors[0].Exception.Message
             if ($nonFipsMsg -match 'Zone\.Identifier|alternate data stream') {
-                throw ("DSInternals native DLL is blocked by Windows (Zone.Identifier). Run the following on the target machine and retry:`n  Get-ChildItem -Path '$env:ProgramFiles\WindowsPowerShell\DSInternals' -Recurse | Unblock-File")
+                $dsModule = Get-Module -Name DSInternals -ErrorAction SilentlyContinue
+                if (-not $dsModule) { $dsModule = Get-Module -ListAvailable -Name DSInternals -ErrorAction SilentlyContinue | Select-Object -First 1 }
+                $dsPath = if ($dsModule) { $dsModule.ModuleBase } else { '<DSInternals module path>' }
+                throw ("DSInternals native DLL is blocked by Windows (Zone.Identifier). Run the following on the target machine and retry:`n  Get-ChildItem -Path '$dsPath' -Recurse | Unblock-File")
             }
             Write-Warning ("DSInternals import reported non-fatal warning(s): {0}" -f $nonFipsMsg)
         }

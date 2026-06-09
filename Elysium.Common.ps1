@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.2.4'
+$script:ElysiumVersion = '2.2.5'
 
 function Invoke-RestartWithExecutable {
     param(

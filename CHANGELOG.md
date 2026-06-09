@@ -6,6 +6,13 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.2.5] — 2026-06-09
+
+### Fixed
+- The DSInternals `Zone.Identifier` block error message (added in v2.2.4) now dynamically resolves the actual DSInternals module path via `Get-Module` instead of hardcoding `$env:ProgramFiles\WindowsPowerShell\DSInternals`. The `Unblock-File` command in the error now points to the correct installation directory.
+
+---
+
 ## [2.2.4] — 2026-06-09
 
 ### Fixed
