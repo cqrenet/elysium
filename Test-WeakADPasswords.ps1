@@ -95,7 +95,7 @@ function Invoke-UsageBeacon {
     if ($normalizedMethod -in @('POST', 'PUT')) {
         $payload = [ordered]@{
             script   = 'Test-WeakADPasswords'
-            version  = '2.2.1'
+            version  = $ElysiumVersion
             ranAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         }
         if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {

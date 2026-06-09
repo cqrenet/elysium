@@ -1,3 +1,5 @@
+$script:ElysiumVersion = '2.2.1'
+
 function Invoke-RestartWithExecutable {
     param(
         [string]$ExecutablePath,

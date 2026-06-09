@@ -61,7 +61,7 @@ function New-HttpClient {
     Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds(600)
-    $client.DefaultRequestHeaders.UserAgent.ParseAdd('Elysium/2.2.1 (+Update-KHDB)')
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Elysium/$ElysiumVersion (+Update-KHDB)")
     return $client
 }
 
