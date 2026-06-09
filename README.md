@@ -14,6 +14,13 @@ Sensitive operations are confined only to the dedicated host. In the third step,
 * **Administrative Access:** Local admin privileges on the host for installation and updating.
 * **Domain Credentials:** For weak-password testing (option 2), an account with the three replication rights (`Replicating Directory Changes`, `Replicating Directory Changes All`, `Replicating Directory Changes In Filtered Set`) on the domain naming context; Domain Admin also works but is not required. Keep this account disabled and enable only when running tests.
 * **Network Requirements:** A stable connection to the domain controller in each tested AD domain and internet access (specific hostnames/IP addresses will be provided).
+
+## Versioning and Releases
+
+Elysium uses a **unified project version** starting with v2.2.0. Every script, the settings template, and the documentation share the same version number so you can verify consistency at a glance by checking the header of any `.ps1` file. Releases are tagged in Git (`v<major>.<minor>.<patch>`) and documented in `CHANGELOG.md`.
+
+Prior to v2.2.0, each script carried its own version number; those historical versions are preserved in the changelog for reference.
+
 ---
 ## Operation
 ### Install and update
@@ -61,8 +68,10 @@ To delegate, enable Advanced Features in ADUC, right-click the domain, choose *D
 #### Common errors
 - `The server has rejected the client credentials.` or `Credentials ... were rejected`:
   The supplied username/password is invalid for the selected domain controller, or the session is not running in the expected domain context. Re-run and provide valid domain credentials.
+- `Account '<user>' is missing the following replication permissions ...`:
+  Starting with v2.2.0, the script pre-validates the three required replication extended rights against the domain object ACL before attempting DCSync. If this error appears, delegate the listed rights (see *Least privileges* above) and retry.
 - `Get-ADReplAccount: Access is denied`:
-  Credentials are valid, but the account does not have the three replication permissions listed above.
+  Credentials are valid, but the account does not have the three replication permissions listed above. This error should now be rare because the pre-check catches most permission issues early; if it still occurs, verify the account is not restricted by an additional conditional access or Group Policy setting.
 - `Only FIPS certified cryptographic algorithms are enabled in .NET`:
   This warning comes from DSInternals under FIPS-enforced environments. Hash-quality operations that rely on MD5 may be limited.
 

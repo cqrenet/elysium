@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 1.4.5                               ##
+## Version: 2.2.0                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -590,6 +590,75 @@ function Get-ValidatedADCredential {
     }
 }
 
+function Test-ReplicationPermissions {
+    param(
+        [Parameter(Mandatory)][string]$DomainDN,
+        [Parameter(Mandatory)][string]$Server,
+        [Parameter(Mandatory)][System.Management.Automation.PSCredential]$Credential
+    )
+
+    $requiredRights = [ordered]@{
+        'Replicating Directory Changes'                 = [guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
+        'Replicating Directory Changes All'             = [guid]'1131f6ab-9c07-11d1-f79f-00c04fc2dcd2'
+        'Replicating Directory Changes In Filtered Set' = [guid]'89e95b76-444d-4c62-991a-0facbeda640c'
+    }
+
+    # Collect caller SID + direct group SIDs so we can match ACEs below
+    $callerSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    try {
+        $samName = $Credential.UserName -replace '^.*\\', ''
+        $adUser = Get-ADUser -Identity $samName -Server $Server -Credential $Credential `
+            -Properties SID, MemberOf -ErrorAction Stop
+        [void]$callerSids.Add($adUser.SID.Value)
+        foreach ($groupDN in @($adUser.MemberOf)) {
+            try {
+                $g = Get-ADGroup -Identity $groupDN -Server $Server -Credential $Credential `
+                    -Properties SID -ErrorAction Stop
+                [void]$callerSids.Add($g.SID.Value)
+            } catch { }
+        }
+    } catch {
+        Write-Warning ("Could not resolve account SIDs for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
+        return
+    }
+
+    # Read the domain object's DACL via ADSI so we can use the provided credential
+    $acl = $null
+    try {
+        $de = New-Object System.DirectoryServices.DirectoryEntry(
+            "LDAP://$Server/$DomainDN",
+            $Credential.UserName,
+            $Credential.GetNetworkCredential().Password
+        )
+        # Translate all trustees to SID form for consistent comparison
+        $acl = $de.ObjectSecurity.GetAccessRules(
+            $true, $true, [System.Security.Principal.SecurityIdentifier])
+    } catch {
+        Write-Warning ("Could not read domain object ACL for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
+        return
+    }
+
+    $missing = @()
+    foreach ($rightName in $requiredRights.Keys) {
+        $guid    = $requiredRights[$rightName]
+        $granted = $false
+        foreach ($ace in $acl) {
+            if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+            if (-not ($ace.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)) { continue }
+            if ($ace.ObjectType -ne $guid) { continue }
+            if ($callerSids.Contains($ace.IdentityReference.Value)) { $granted = $true; break }
+        }
+        if (-not $granted) { $missing += $rightName }
+    }
+
+    if ($missing.Count -gt 0) {
+        throw ("Account '{0}' is missing the following replication permissions on '{1}':`n  - {2}`n`nGrant these extended rights on the domain object to allow DCSync-based hash retrieval." -f `
+            $Credential.UserName, $DomainDN, ($missing -join "`n  - "))
+    }
+
+    Write-Verbose ("Replication permission pre-check passed for '{0}'." -f $Credential.UserName)
+}
+
 # Function to test for weak AD passwords
 function Test-WeakADPasswords {
     param (
@@ -622,6 +691,16 @@ function Test-WeakADPasswords {
     } else {
         $credential = $Credential
         Write-Verbose ("Using credential supplied by caller: {0}" -f $credential.UserName)
+    }
+
+    # Verify the account has the three replication extended rights before attempting DCSync
+    try {
+        $domainInfo = Get-ADDomain -Server $selectedDomain["DC"] -Credential $credential -ErrorAction Stop
+        Test-ReplicationPermissions -DomainDN $domainInfo.DistinguishedName `
+            -Server $selectedDomain["DC"] -Credential $credential
+    } catch {
+        Write-Error $_.Exception.Message
+        return
     }
 
     # Performing the test
