@@ -631,16 +631,62 @@ function Test-WeakADPasswords {
         $testResults = $accounts | Test-PasswordQuality -WeakPasswordHashesSortedFile $resolvedHashFile.Path
         Write-Verbose "Password quality test completed."
     } catch {
-        $message = $_.Exception.Message
+        $ex = $_.Exception
+        $diagLines = [System.Collections.Generic.List[string]]::new()
+        $diagLines.Add('========================================')
+        $diagLines.Add('ELYSLUM DCSYNC DIAGNOSTIC DUMP')
+        $diagLines.Add('========================================')
+        $diagLines.Add("Timestamp    : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        $diagLines.Add("Script Ver   : $ElysiumVersion")
+        $diagLines.Add("PS Version   : $($PSVersionTable.PSVersion)")
+        $diagLines.Add("PS Edition   : $($PSVersionTable.PSEdition)")
+        $diagLines.Add("DSInternals  : $((Get-Module -Name DSInternals).Version)")
+        $diagLines.Add("DC           : $($selectedDomain['DC'])")
+        $diagLines.Add("Domain       : $($selectedDomain.Name)")
+        $diagLines.Add("Account      : $($credential.UserName)")
+        $diagLines.Add("DomainDN     : $($domainInfo.DistinguishedName)")
+        $diagLines.Add('')
+        $diagLines.Add('--- EXCEPTION CHAIN ---')
+        $depth = 0
+        $currentEx = $ex
+        while ($null -ne $currentEx) {
+            $diagLines.Add("Exception $depth : $($currentEx.GetType().FullName)")
+            $diagLines.Add("  Message    : $($currentEx.Message)")
+            $diagLines.Add("  HResult    : 0x$($currentEx.HResult.ToString('X8'))")
+            $diagLines.Add("  Source     : $($currentEx.Source)")
+            if ($currentEx.TargetSite) {
+                $diagLines.Add("  TargetSite : $($currentEx.TargetSite)")
+            }
+            if ($currentEx.StackTrace) {
+                $diagLines.Add("  StackTrace :`n$($currentEx.StackTrace -replace '^', '    ')")
+            }
+            $diagLines.Add('')
+            $currentEx = $currentEx.InnerException
+            $depth++
+        }
+        $diagLines.Add('--- END DIAGNOSTIC DUMP ---')
+
+        $diagText = $diagLines -join "`r`n"
+        Write-Host $diagText -ForegroundColor Red
+
+        $diagPath = Join-Path -Path $reportPathBase -ChildPath "dcsync-diag-$timestamp.txt"
+        try {
+            New-Item -ItemType Directory -Path $reportPathBase -Force | Out-Null
+            [System.IO.File]::WriteAllText($diagPath, $diagText, [System.Text.Encoding]::UTF8)
+            Write-Host ("Diagnostic dump written to: {0}" -f $diagPath)
+        } catch {
+            Write-Warning ("Could not write diagnostic dump to disk: {0}" -f $_.Exception.Message)
+        }
+
+        # Still emit the concise error for the operator
+        $message = $ex.Message
         if ($message -match 'Access is denied') {
             Write-Error ("Access denied while reading replication data from '{0}' using '{1}'. Ensure this account has Replicating Directory Changes, Replicating Directory Changes All, and Replicating Directory Changes In Filtered Set on the domain." -f $selectedDomain["DC"], $credential.UserName)
-            return
-        }
-        if ($message -match 'rejected the client credentials|unknown user name|bad password|logon failure') {
+        } elseif ($message -match 'rejected the client credentials|unknown user name|bad password|logon failure') {
             Write-Error ("Credentials for '{0}' were rejected by '{1}'. Re-run and provide valid domain credentials." -f $credential.UserName, $selectedDomain["DC"])
-            return
+        } else {
+            Write-Error ("An error occurred while testing passwords: {0}" -f $message)
         }
-        Write-Error ("An error occurred while testing passwords: {0}" -f $message)
         return
     } finally {
         if ($resolvedHashFile -and $resolvedHashFile.IsTemporary -and (Test-Path -LiteralPath $resolvedHashFile.Path)) {
