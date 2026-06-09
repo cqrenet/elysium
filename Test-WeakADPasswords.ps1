@@ -656,7 +656,7 @@ function Test-ReplicationPermissions {
             $Credential.UserName, $DomainDN, ($missing -join "`n  - "))
     }
 
-    Write-Verbose ("Replication permission pre-check passed for '{0}'." -f $Credential.UserName)
+    Write-Host ("[+] Replication permissions verified for '{0}'." -f $Credential.UserName)
 }
 
 # Function to test for weak AD passwords
