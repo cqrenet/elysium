@@ -6,6 +6,14 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.2.3] — 2026-06-09
+
+### Fixed
+- `Test-ReplicationPermissions` (in `Elysium.Common.ps1`) now correctly recognizes `GenericAll` and blanket `ExtendedRight` (empty ObjectType) ACEs as satisfying replication permission requirements. Previously, only exact GUID-matched ExtendedRight ACEs were detected, causing false negatives when rights were granted via broader permissions.
+- Improved error diagnostics: the missing-rights message now indicates whether an ACE for the specific right exists on the domain object but is not assigned to the caller, versus no ACE existing at all.
+
+---
+
 ## [2.2.2] — 2026-06-09
 
 ### Fixed

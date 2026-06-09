@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.2.2'
+$script:ElysiumVersion = '2.2.3'
 
 function Invoke-RestartWithExecutable {
     param(
@@ -374,19 +374,34 @@ function Test-ReplicationPermissions {
 
     $missing = @()
     foreach ($rightName in $requiredRights.Keys) {
-        $guid    = $requiredRights[$rightName]
-        $granted = $false
+        $guid             = $requiredRights[$rightName]
+        $granted          = $false
+        $aceExistsForGuid = $false
         foreach ($ace in $acl) {
             if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-            if (-not ($ace.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)) { continue }
-            if ($ace.ObjectType -ne $guid) { continue }
+            $rights        = $ace.ActiveDirectoryRights
+            $hasExtended   = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+            $hasGenericAll = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
+            # Match: exact GUID, OR ExtendedRight with empty ObjectType (all extended rights), OR GenericAll
+            $isMatch = $hasGenericAll `
+                -or ($hasExtended -and $ace.ObjectType -eq [guid]::Empty) `
+                -or ($hasExtended -and $ace.ObjectType -eq $guid)
+            if (-not $isMatch) { continue }
+            if ($ace.ObjectType -eq $guid) { $aceExistsForGuid = $true }
             if ($callerSids.Contains($ace.IdentityReference.Value)) { $granted = $true; break }
         }
-        if (-not $granted) { $missing += $rightName }
+        if (-not $granted) {
+            $hint = if ($aceExistsForGuid) {
+                ' (ACE exists on the domain object but is not assigned to this account or any of its groups)'
+            } else {
+                ' (no ACE found for this right on the domain object at all)'
+            }
+            $missing += $rightName + $hint
+        }
     }
 
     if ($missing.Count -gt 0) {
-        throw ("Account '{0}' is missing the following replication permissions on '{1}':`n  - {2}`n`nGrant these extended rights on the domain object to allow DCSync-based hash retrieval." -f `
+        throw ("Account '{0}' failed replication permission check on '{1}':`n  - {2}`n`nGrant these extended rights on the domain object to allow DCSync-based hash retrieval." -f `
             $Credential.UserName, $DomainDN, ($missing -join "`n  - "))
     }
 
