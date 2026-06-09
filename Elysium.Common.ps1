@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.2.3'
+$script:ElysiumVersion = '2.2.4'
 
 function Invoke-RestartWithExecutable {
     param(
@@ -379,6 +379,8 @@ function Test-ReplicationPermissions {
         $aceExistsForGuid = $false
         foreach ($ace in $acl) {
             if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+            # InheritOnly ACEs apply to child objects only — the domain root itself is not covered
+            if ([bool]($ace.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
             $rights        = $ace.ActiveDirectoryRights
             $hasExtended   = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
             $hasGenericAll = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll)

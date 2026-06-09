@@ -6,6 +6,14 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.2.4] — 2026-06-09
+
+### Fixed
+- `Test-ReplicationPermissions` (in `Elysium.Common.ps1`) now skips `InheritOnly` ACEs when evaluating replication rights. An ACE marked `InheritOnly` applies only to child objects, not the domain root itself, so it does not grant the required extended rights for DCSync on the domain object.
+- `Import-CompatModule` (in `Test-WeakADPasswords.ps1`) now detects DSInternals being blocked by Windows `Zone.Identifier` (alternate data stream from internet download) and throws a clear, actionable error with the exact `Unblock-File` command to run. Previously this surfaced as an opaque non-FIPS warning.
+
+---
+
 ## [2.2.3] — 2026-06-09
 
 ### Fixed
