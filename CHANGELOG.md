@@ -6,6 +6,13 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.4.1] — 2026-06-09
+
+### Fixed
+- `Test-ReplicationPermissions` and `Test-DCClockSkew` now URI-escape Distinguished Names via `[System.Uri]::EscapeDataString` before embedding them in `DirectoryEntry` LDAP URLs. DNs containing `/`, `#`, or other reserved characters previously caused URL mis-parsing and constructor failures.
+
+---
+
 ## [2.4.0] — 2026-06-09
 
 ### Added
