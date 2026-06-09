@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.4.2'
+$script:ElysiumVersion = '2.4.3'
 
 function Invoke-RestartWithExecutable {
     param(
@@ -343,14 +343,10 @@ function Test-ReplicationPermissions {
 
         # tokenGroups is a constructed attribute containing all SIDs in the user's token,
         # including nested group memberships - more reliable than walking MemberOf recursively
-        $userDe = New-Object System.DirectoryServices.DirectoryEntry(
-            "LDAP://$Server/$([System.Uri]::EscapeDataString($adUser.DistinguishedName))",
-            $Credential.UserName,
-            $Credential.GetNetworkCredential().Password
-        )
-        $userDe.RefreshCache(@('tokenGroups'))
-        foreach ($sidBytes in $userDe.Properties['tokenGroups']) {
-            $sid = New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)
+        $adUserWithTokenGroups = Get-ADUser -Identity $samName -Server $Server -Credential $Credential `
+            -Properties tokenGroups -ErrorAction Stop
+        foreach ($sidBytes in $adUserWithTokenGroups.tokenGroups) {
+            $sid = New-Object System.Security.Principal.SecurityIdentifier(@([byte[]]$sidBytes), 0)
             [void]$callerSids.Add($sid.Value)
         }
 
@@ -374,7 +370,7 @@ function Test-ReplicationPermissions {
     $acl = $null
     try {
         $de = New-Object System.DirectoryServices.DirectoryEntry(
-            "LDAP://$Server/$([System.Uri]::EscapeDataString($DomainDN))",
+            "LDAP://$Server/$DomainDN",
             $Credential.UserName,
             $Credential.GetNetworkCredential().Password
         )

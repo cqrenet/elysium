@@ -6,6 +6,14 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.4.3] — 2026-06-09
+
+### Fixed
+- Replaced the `DirectoryEntry` + `RefreshCache` tokenGroups retrieval in `Test-ReplicationPermissions` with `Get-ADUser -Properties tokenGroups`. The previous `DirectoryEntry` approach was broken by the v2.4.1 URI-escaping "fix" (`EscapeDataString` produces percent-encoded paths that ADSI `DirectoryEntry` cannot parse, causing "invalid dn syntax" errors).
+- Removed `EscapeDataString` from the ACL-reading `DirectoryEntry` path in `Test-ReplicationPermissions` as well, since `DirectoryEntry` expects raw LDAP path syntax, not URI encoding.
+
+---
+
 ## [2.4.2] — 2026-06-09
 
 ### Fixed
