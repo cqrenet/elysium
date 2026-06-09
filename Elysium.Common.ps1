@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.2.1'
+$script:ElysiumVersion = '2.2.2'
 
 function Invoke-RestartWithExecutable {
     param(
@@ -338,14 +338,20 @@ function Test-ReplicationPermissions {
     try {
         $samName = $Credential.UserName -replace '^.*\\', ''
         $adUser = Get-ADUser -Identity $samName -Server $Server -Credential $Credential `
-            -Properties SID, MemberOf -ErrorAction Stop
+            -Properties SID, DistinguishedName -ErrorAction Stop
         [void]$callerSids.Add($adUser.SID.Value)
-        foreach ($groupDN in @($adUser.MemberOf)) {
-            try {
-                $g = Get-ADGroup -Identity $groupDN -Server $Server -Credential $Credential `
-                    -Properties SID -ErrorAction Stop
-                [void]$callerSids.Add($g.SID.Value)
-            } catch { }
+
+        # tokenGroups is a constructed attribute containing all SIDs in the user's token,
+        # including nested group memberships — more reliable than walking MemberOf recursively
+        $userDe = New-Object System.DirectoryServices.DirectoryEntry(
+            "LDAP://$Server/$($adUser.DistinguishedName)",
+            $Credential.UserName,
+            $Credential.GetNetworkCredential().Password
+        )
+        $userDe.RefreshCache(@('tokenGroups'))
+        foreach ($sidBytes in $userDe.Properties['tokenGroups']) {
+            $sid = New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)
+            [void]$callerSids.Add($sid.Value)
         }
     } catch {
         Write-Warning ("Could not resolve account SIDs for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)

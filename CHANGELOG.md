@@ -6,6 +6,13 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.2.2] — 2026-06-09
+
+### Fixed
+- `Test-ReplicationPermissions` (in `Elysium.Common.ps1`) now resolves the caller's **effective token SIDs** via the `tokenGroups` constructed attribute instead of walking `MemberOf` directly. This correctly accounts for nested group memberships and avoids false-positive "missing permissions" errors when the account is entitled through nested groups.
+
+---
+
 ## [2.2.1] — 2026-06-09
 
 ### Changed
