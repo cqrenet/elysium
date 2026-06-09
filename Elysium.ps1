@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Elysium.ps1                            ##
-## Version: 2.2.0                               ##
+## Version: 2.2.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -51,8 +51,6 @@ if ([string]::IsNullOrEmpty($passphrase)) {
 } else {
     Write-Host "Passphrase found in environment variables."
 }
-
-# Continue with the rest of your script...
 
 function Start-OrchestratorTranscript {
     param([string]$BasePath)

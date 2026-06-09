@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 2.2.0                               ##
+## Version: 2.2.1                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -21,9 +21,12 @@ Weak AD password finder component of Elysium tool.
 This script will test the passwords of selected domain (defined in ElysiumSettings.txt) using DSInternals' Test-PasswordQuality cmdlet. It writes its output to a report file which is meant to be shared with the internal security team. The report now includes UPNs for each account mentioned.
 #>
 
-# Enable verbose output
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+[string]$commonHelper = Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.Common.ps1'
+if (-not (Test-Path -LiteralPath $commonHelper)) { throw "Common helper not found at $commonHelper" }
+. $commonHelper
 
 $VerbosePreference = "SilentlyContinue"
 
@@ -92,7 +95,7 @@ function Invoke-UsageBeacon {
     if ($normalizedMethod -in @('POST', 'PUT')) {
         $payload = [ordered]@{
             script   = 'Test-WeakADPasswords'
-            version  = '1.4.5'
+            version  = '2.2.1'
             ranAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         }
         if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {
@@ -124,32 +127,9 @@ $footer = "`r`n==== End of Report ===="
 
 Start-TestTranscript -BasePath $scriptRoot
 try {
-    # Import settings
     Write-Verbose "Loading settings..."
-    $ElysiumSettings = @{}
-    $settingsPath = Join-Path -Path $scriptRoot -ChildPath "ElysiumSettings.txt"
-
-    # Ensure the settings file exists
-    if (-not (Test-Path $settingsPath)) {
-        Write-Error "Settings file not found at $settingsPath"
-        exit
-    }
-
-    # Load settings from file
-    try {
-        Get-Content $settingsPath | ForEach-Object {
-            if (-not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith("#")) {
-                $keyValue = $_ -split '=', 2
-                if ($keyValue.Count -eq 2) {
-                    $ElysiumSettings[$keyValue[0].Trim()] = $keyValue[1].Trim()
-                }
-            }
-        }
-        Write-Verbose "Settings loaded successfully."
-    } catch {
-        Write-Error ("An error occurred while loading settings: {0}" -f $_.Exception.Message)
-        exit
-    }
+    $ElysiumSettings = Read-ElysiumSettings -ScriptRoot $scriptRoot
+    Write-Verbose "Settings loaded successfully."
 
     $usageBeaconUrl = $ElysiumSettings['UsageBeaconUrl']
     $usageBeaconMethod = $ElysiumSettings['UsageBeaconMethod']
@@ -559,104 +539,6 @@ function Resolve-DSInternalsWeakHashFile {
         Path        = $tmpPath
         IsTemporary = $true
     }
-}
-
-function Get-ValidatedADCredential {
-    param (
-        [Parameter(Mandatory)][string]$DomainName,
-        [Parameter(Mandatory)][string]$Server,
-        [int]$MaxAttempts = 3
-    )
-
-    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        $credential = Get-Credential -Message "Enter AD credentials with replication rights for $DomainName (attempt $attempt/$MaxAttempts)"
-        if ($null -eq $credential) {
-            throw "Credential prompt was cancelled."
-        }
-
-        try {
-            Get-ADDomain -Server $Server -Credential $credential -ErrorAction Stop | Out-Null
-            Write-Verbose ("Credential pre-check succeeded for '{0}' against '{1}'." -f $credential.UserName, $Server)
-            return $credential
-        } catch {
-            $message = $_.Exception.Message
-            if ($message -match 'rejected the client credentials|unknown user name|bad password|logon failure') {
-                Write-Warning ("Credentials were rejected for '{0}' (attempt {1}/{2})." -f $credential.UserName, $attempt, $MaxAttempts)
-                if ($attempt -lt $MaxAttempts) { continue }
-                throw "Credentials were rejected by domain controller '$Server' after $MaxAttempts attempts."
-            }
-            throw "Credential pre-check failed against '$Server': $message"
-        }
-    }
-}
-
-function Test-ReplicationPermissions {
-    param(
-        [Parameter(Mandatory)][string]$DomainDN,
-        [Parameter(Mandatory)][string]$Server,
-        [Parameter(Mandatory)][System.Management.Automation.PSCredential]$Credential
-    )
-
-    $requiredRights = [ordered]@{
-        'Replicating Directory Changes'                 = [guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
-        'Replicating Directory Changes All'             = [guid]'1131f6ab-9c07-11d1-f79f-00c04fc2dcd2'
-        'Replicating Directory Changes In Filtered Set' = [guid]'89e95b76-444d-4c62-991a-0facbeda640c'
-    }
-
-    # Collect caller SID + direct group SIDs so we can match ACEs below
-    $callerSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    try {
-        $samName = $Credential.UserName -replace '^.*\\', ''
-        $adUser = Get-ADUser -Identity $samName -Server $Server -Credential $Credential `
-            -Properties SID, MemberOf -ErrorAction Stop
-        [void]$callerSids.Add($adUser.SID.Value)
-        foreach ($groupDN in @($adUser.MemberOf)) {
-            try {
-                $g = Get-ADGroup -Identity $groupDN -Server $Server -Credential $Credential `
-                    -Properties SID -ErrorAction Stop
-                [void]$callerSids.Add($g.SID.Value)
-            } catch { }
-        }
-    } catch {
-        Write-Warning ("Could not resolve account SIDs for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
-        return
-    }
-
-    # Read the domain object's DACL via ADSI so we can use the provided credential
-    $acl = $null
-    try {
-        $de = New-Object System.DirectoryServices.DirectoryEntry(
-            "LDAP://$Server/$DomainDN",
-            $Credential.UserName,
-            $Credential.GetNetworkCredential().Password
-        )
-        # Translate all trustees to SID form for consistent comparison
-        $acl = $de.ObjectSecurity.GetAccessRules(
-            $true, $true, [System.Security.Principal.SecurityIdentifier])
-    } catch {
-        Write-Warning ("Could not read domain object ACL for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
-        return
-    }
-
-    $missing = @()
-    foreach ($rightName in $requiredRights.Keys) {
-        $guid    = $requiredRights[$rightName]
-        $granted = $false
-        foreach ($ace in $acl) {
-            if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-            if (-not ($ace.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)) { continue }
-            if ($ace.ObjectType -ne $guid) { continue }
-            if ($callerSids.Contains($ace.IdentityReference.Value)) { $granted = $true; break }
-        }
-        if (-not $granted) { $missing += $rightName }
-    }
-
-    if ($missing.Count -gt 0) {
-        throw ("Account '{0}' is missing the following replication permissions on '{1}':`n  - {2}`n`nGrant these extended rights on the domain object to allow DCSync-based hash retrieval." -f `
-            $Credential.UserName, $DomainDN, ($missing -join "`n  - "))
-    }
-
-    Write-Host ("[+] Replication permissions verified for '{0}'." -f $Credential.UserName)
 }
 
 # Function to test for weak AD passwords

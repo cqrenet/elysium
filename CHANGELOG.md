@@ -6,6 +6,22 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.2.1] — 2026-06-09
+
+### Changed
+- **DRY refactoring — shared helpers consolidated into `Elysium.Common.ps1`:**
+  - Moved `Read-KeyValueSettingsFile`, `Read-ElysiumSettings`, and `Get-SettingsValue` from `Prepare-KHDBStorage.ps1` and `Update-KHDB.ps1` into the common helper.
+  - Moved `Build-BlobUri` and Azure URI helpers from `Update-KHDB.ps1` into the common helper.
+  - Moved `Get-FunctionDefinitionText` from all scripts that duplicated it into the common helper.
+  - Moved `Get-ValidatedADCredential` and `Test-ReplicationPermissions` from `Test-WeakADPasswords.ps1` into the common helper.
+  - Moved all native S3 SigV4 helpers (`Ensure-AWSS3Module`, `New-S3Client`, `HmacSha256`, `GetSignatureKey`, `BuildAuthHeaders`, `BuildS3Uri`, etc.) from `Extract-NTHashes.ps1` into the common helper.
+- `Test-WeakADPasswords.ps1` and `Extract-NTHashes.ps1` now import `Elysium.Common.ps1` (they previously did not), reducing duplication and ensuring consistent behavior.
+- `Update-KHDB.ps1` and `Prepare-KHDBStorage.ps1` removed their local copies of helpers already available in the common module.
+- Removed legacy `Settings.ps1` (superseded by `ElysiumSettings.txt`).
+- Minor cleanup: removed stray placeholder comment in `Elysium.ps1`.
+
+---
+
 ## [2.2.0] — 2026-06-09
 
 ### Changed
