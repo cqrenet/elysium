@@ -6,6 +6,18 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.4.4] — 2026-06-15
+
+### Fixed
+- `Test-ReplicationPermissions` now checks **both** the domain NC (`DC=…`) and the schema NC (`CN=Schema,CN=Configuration,DC=…`) for the required DCSync extended rights. DSInternals 7.0 changed schema fetching from LDAP to DRS (`GetNCChanges`), so the schema NC now requires its own ACL entry. Previously the pre-flight check passed (domain NC rights present) while `Get-ADReplAccount` immediately failed at `FetchSchema()` with "Replication access was denied".
+- The `Replication access was denied` catch block in `Test-WeakADPasswords` now emits a structured, actionable error message that names the exact DNs to target and explains the DSInternals 7.0 schema NC change, replacing the previous generic "ensure this account has replication rights on the domain" message.
+- Diagnostic dump (`dcsync-diag-*.txt`) now includes a `SchemaDN` field so the schema NC path is immediately visible when triaging a dump.
+
+### Changed
+- Least-privilege requirement updated: the DCSync service account now needs the three replication extended rights on **both** the domain NC *and* `CN=Configuration,DC=…` (which covers the schema NC via inheritance). See *Least privileges* in the README for delegation steps.
+
+---
+
 ## [2.4.3] — 2026-06-09
 
 ### Fixed

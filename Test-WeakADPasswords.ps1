@@ -8,7 +8,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Test-WeakADPasswords.ps1               ##
-## Version: 2.4.3                               ##
+## Version: 2.4.4                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -645,6 +645,7 @@ function Test-WeakADPasswords {
         $diagLines.Add("Domain       : $($selectedDomain.Name)")
         $diagLines.Add("Account      : $($credential.UserName)")
         $diagLines.Add("DomainDN     : $($domainInfo.DistinguishedName)")
+        $diagLines.Add("SchemaDN     : CN=Schema,CN=Configuration,$($domainInfo.DistinguishedName)")
         $diagLines.Add('')
         $diagLines.Add('--- EXCEPTION CHAIN ---')
         $depth = 0
@@ -680,8 +681,9 @@ function Test-WeakADPasswords {
 
         # Still emit the concise error for the operator
         $message = $ex.Message
-        if ($message -match 'Access is denied') {
-            Write-Error ("Access denied while reading replication data from '{0}' using '{1}'. Ensure this account has Replicating Directory Changes, Replicating Directory Changes All, and Replicating Directory Changes In Filtered Set on the domain." -f $selectedDomain["DC"], $credential.UserName)
+        if ($message -match 'Replication access was denied|Access is denied') {
+            Write-Error ("Replication access denied from '{0}' using '{1}'.`n`nDSInternals 7.0 fetches the AD schema via DRS before replicating accounts. The schema NC has its own ACL.`nGrant the 3 DCSync extended rights on BOTH:`n  1. {2}  (domain NC - for accounts)`n  2. CN=Configuration,{2}  (config NC - covers schema NC via inheritance)`n`nIn ADUC: right-click each object > Properties > Security > Advanced > Add the extended rights for '{1}'." -f `
+                $selectedDomain["DC"], $credential.UserName, $domainInfo.DistinguishedName)
         } elseif ($message -match 'rejected the client credentials|unknown user name|bad password|logon failure') {
             Write-Error ("Credentials for '{0}' were rejected by '{1}'. Re-run and provide valid domain credentials." -f $credential.UserName, $selectedDomain["DC"])
         } else {

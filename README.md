@@ -12,7 +12,7 @@ Sensitive operations are confined only to the dedicated host. In the third step,
 ## Prerequisities
 * **Windows Host:** A Windows machine with PowerShell and DSInternals suite installed.
 * **Administrative Access:** Local admin privileges on the host for installation and updating.
-* **Domain Credentials:** For weak-password testing (option 2), an account with the three replication rights (`Replicating Directory Changes`, `Replicating Directory Changes All`, `Replicating Directory Changes In Filtered Set`) on the domain naming context; Domain Admin also works but is not required. Keep this account disabled and enable only when running tests.
+* **Domain Credentials:** For weak-password testing (option 2), an account with the three replication rights (`Replicating Directory Changes`, `Replicating Directory Changes All`, `Replicating Directory Changes In Filtered Set`) on **both** the domain naming context **and** `CN=Configuration,DC=…` (which covers the schema NC via inheritance). Domain Admin also works but is not required. See *Least privileges* below for exact delegation steps. Keep this account disabled and enable only when running tests.
 * **Network Requirements:** A stable connection to the domain controller in each tested AD domain and internet access (specific hostnames/IP addresses will be provided).
 
 ## Versioning and Releases
@@ -58,20 +58,38 @@ The tool connects to the selected Domain Controller and compares accounts agains
 The KHDB file is consumed by DSInternals as a sorted hash list with one NT hash per line (for example `HASH`). Do not include `:count` suffixes in `khdb.txt`; the packaging and update scripts normalize legacy `HASH:count` input to the hash-only format automatically.
 
 #### Least privileges for password-quality testing
-The DSInternals cmdlets (`Get-ADReplAccount`/`Test-PasswordQuality`) pull replicated password data, which requires DCSync-style rights. The account that runs option 2 does not have to be a Domain Admin if it has these permissions on the domain naming context:
+The DSInternals cmdlets (`Get-ADReplAccount`/`Test-PasswordQuality`) pull replicated password data using the MS-DRSR (DCSync) protocol. The account does not need to be a Domain Admin; delegate these three extended rights on **two** AD objects:
+
+| Object | Why |
+|--------|-----|
+| Domain NC root — e.g. `DC=admin,DC=lan` | Required to replicate account password hashes |
+| Configuration NC root — e.g. `CN=Configuration,DC=admin,DC=lan` | Required by DSInternals 7.0+ to fetch the AD schema via DRS before replication; covers the schema NC (`CN=Schema,CN=Configuration,DC=…`) via inheritance |
+
+Rights to delegate on both objects:
 - `Replicating Directory Changes`
 - `Replicating Directory Changes All`
-- `Replicating Directory Changes In Filtered Set` (needed on 2008 R2+ to read password hashes)
+- `Replicating Directory Changes In Filtered Set` (required on 2008 R2+ to read password hashes)
 
-To delegate, enable Advanced Features in ADUC, right-click the domain, choose *Delegate Control…*, pick the service account, select *Create a custom task*, apply to *This object and all descendant objects*, and tick the three replication permissions above. Keep this account disabled and only activate it for scheduled tests.
+**To delegate in ADUC:** enable *Advanced Features*, right-click each object above, choose *Properties* > *Security* > *Advanced* > *Add*, select the service account, set *Applies to: This object only*, and tick the three rights. Repeat for both objects.
+
+**To delegate via `dsacls`** (replace `DC=admin,DC=lan` and `DOMAIN\svc` as appropriate):
+```powershell
+foreach ($nc in @('DC=admin,DC=lan', 'CN=Configuration,DC=admin,DC=lan')) {
+    dsacls $nc /I:T /G "DOMAIN\svc:CA;Replicating Directory Changes"
+    dsacls $nc /I:T /G "DOMAIN\svc:CA;Replicating Directory Changes All"
+    dsacls $nc /I:T /G "DOMAIN\svc:CA;Replicating Directory Changes In Filtered Set"
+}
+```
+
+Keep the service account disabled and only activate it for scheduled tests.
 
 #### Common errors
 - `The server has rejected the client credentials.` or `Credentials ... were rejected`:
   The supplied username/password is invalid for the selected domain controller, or the session is not running in the expected domain context. Re-run and provide valid domain credentials.
 - `Account '<user>' is missing the following replication permissions ...`:
   Starting with v2.2.0, the script pre-validates the three required replication extended rights against the domain object ACL before attempting DCSync. If this error appears, delegate the listed rights (see *Least privileges* above) and retry.
-- `Get-ADReplAccount: Access is denied`:
-  Credentials are valid, but the account does not have the three replication permissions listed above. This error should now be rare because the pre-check catches most permission issues early; if it still occurs, verify the account is not restricted by an additional conditional access or Group Policy setting.
+- `Replication access was denied` (from `Get-ADReplAccount`):
+  DSInternals 7.0+ fetches the AD schema via DRS (`GetNCChanges`) as its first step, before replicating any accounts. This fails if the service account lacks `Replicating Directory Changes` on the **schema NC** (`CN=Schema,CN=Configuration,DC=…`). Grant the three rights on `CN=Configuration,DC=…` (covers schema NC via inheritance) in addition to the domain NC — see *Least privileges* above. The pre-flight permission check in v2.4.4+ catches this mismatch before attempting replication.
 - `Only FIPS certified cryptographic algorithms are enabled in .NET`:
   This warning comes from DSInternals under FIPS-enforced environments. Hash-quality operations that rely on MD5 may be limited.
 

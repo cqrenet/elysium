@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.4.3'
+$script:ElysiumVersion = '2.4.4'
 
 function Invoke-RestartWithExecutable {
     param(
@@ -328,10 +328,22 @@ function Test-ReplicationPermissions {
         [Parameter(Mandatory)][System.Management.Automation.PSCredential]$Credential
     )
 
-    $requiredRights = [ordered]@{
+    $allThreeRights = [ordered]@{
         'Replicating Directory Changes'                 = [guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
         'Replicating Directory Changes All'             = [guid]'1131f6ab-9c07-11d1-f79f-00c04fc2dcd2'
         'Replicating Directory Changes In Filtered Set' = [guid]'89e95b76-444d-4c62-991a-0facbeda640c'
+    }
+
+    # DSInternals 7.0 fetches the AD schema via DRS (GetNCChanges) before replicating accounts.
+    # The schema NC has its own ACL - rights on the domain NC do not cover it.
+    # Older DSInternals read schema via LDAP (no special rights needed); v7.0 switched to DRS.
+    $schemaDN = "CN=Schema,CN=Configuration,$DomainDN"
+
+    $ncsToCheck = [ordered]@{
+        $DomainDN = $allThreeRights
+        $schemaDN = [ordered]@{
+            'Replicating Directory Changes' = [guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
+        }
     }
 
     $callerSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -367,56 +379,68 @@ function Test-ReplicationPermissions {
         return
     }
 
-    $acl = $null
-    try {
-        $de = New-Object System.DirectoryServices.DirectoryEntry(
-            "LDAP://$Server/$DomainDN",
-            $Credential.UserName,
-            $Credential.GetNetworkCredential().Password
-        )
-        $acl = $de.ObjectSecurity.GetAccessRules(
-            $true, $true, [System.Security.Principal.SecurityIdentifier])
-    } catch {
-        Write-Warning ("Could not read domain object ACL for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
-        return
-    }
+    $allMissingLines = @()
 
-    $missing = @()
-    foreach ($rightName in $requiredRights.Keys) {
-        $guid             = $requiredRights[$rightName]
-        $granted          = $false
-        $aceExistsForGuid = $false
-        foreach ($ace in $acl) {
-            if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-            # InheritOnly ACEs apply to child objects only - the domain root itself is not covered
-            if ([bool]($ace.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
-            $rights        = $ace.ActiveDirectoryRights
-            $hasExtended   = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
-            $hasGenericAll = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
-            # Match: exact GUID, OR ExtendedRight with empty ObjectType (all extended rights), OR GenericAll
-            $isMatch = $hasGenericAll `
-                -or ($hasExtended -and $ace.ObjectType -eq [guid]::Empty) `
-                -or ($hasExtended -and $ace.ObjectType -eq $guid)
-            if (-not $isMatch) { continue }
-            if ($ace.ObjectType -eq $guid) { $aceExistsForGuid = $true }
-            if ($callerSids.Contains($ace.IdentityReference.Value)) { $granted = $true; break }
+    foreach ($ncEntry in $ncsToCheck.GetEnumerator()) {
+        $ncDN         = $ncEntry.Key
+        $rightsToCheck = $ncEntry.Value
+
+        $acl = $null
+        try {
+            $de = New-Object System.DirectoryServices.DirectoryEntry(
+                "LDAP://$Server/$ncDN",
+                $Credential.UserName,
+                $Credential.GetNetworkCredential().Password
+            )
+            $acl = $de.ObjectSecurity.GetAccessRules(
+                $true, $true, [System.Security.Principal.SecurityIdentifier])
+        } catch {
+            Write-Warning ("Could not read ACL on '$ncDN' for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
+            continue
         }
-        if (-not $granted) {
-            $hint = if ($aceExistsForGuid) {
-                ' (ACE exists on the domain object but is not assigned to this account or any of its groups)'
-            } else {
-                ' (no ACE found for this right on the domain object at all)'
+
+        foreach ($rightName in $rightsToCheck.Keys) {
+            $guid             = $rightsToCheck[$rightName]
+            $granted          = $false
+            $aceExistsForGuid = $false
+            foreach ($ace in $acl) {
+                if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+                # InheritOnly ACEs apply to child objects only - the NC root itself is not covered
+                if ([bool]($ace.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
+                $rights        = $ace.ActiveDirectoryRights
+                $hasExtended   = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)
+                $hasGenericAll = [bool]($rights -band [System.DirectoryServices.ActiveDirectoryRights]::GenericAll)
+                # Match: exact GUID, OR ExtendedRight with empty ObjectType (all extended rights), OR GenericAll
+                $isMatch = $hasGenericAll `
+                    -or ($hasExtended -and $ace.ObjectType -eq [guid]::Empty) `
+                    -or ($hasExtended -and $ace.ObjectType -eq $guid)
+                if (-not $isMatch) { continue }
+                if ($ace.ObjectType -eq $guid) { $aceExistsForGuid = $true }
+                if ($callerSids.Contains($ace.IdentityReference.Value)) { $granted = $true; break }
             }
-            $missing += $rightName + $hint
+            if (-not $granted) {
+                $hint = if ($aceExistsForGuid) {
+                    ' (ACE exists but not assigned to this account or any of its groups)'
+                } else {
+                    ' (no ACE found for this right on this object)'
+                }
+                $allMissingLines += "[on $ncDN] $rightName$hint"
+            }
         }
     }
 
-    if ($missing.Count -gt 0) {
-        throw ("Account '{0}' failed replication permission check on '{1}':`n  - {2}`n`nGrant these extended rights on the domain object to allow DCSync-based hash retrieval." -f `
-            $Credential.UserName, $DomainDN, ($missing -join "`n  - "))
+    if ($allMissingLines.Count -gt 0) {
+        $schemaNote = ''
+        if ($allMissingLines | Where-Object { $_ -match [regex]::Escape($schemaDN) }) {
+            $schemaNote = ("`n`nNOTE: DSInternals 7.0 fetches the AD schema via DRS before replicating accounts." +
+                " Grant 'Replicating Directory Changes' on CN=Configuration,$DomainDN" +
+                " (covers Schema NC via inheritance) in addition to the domain NC rights.")
+        }
+        throw ("Account '{0}' failed replication permission check:`n  - {1}{2}" -f `
+            $Credential.UserName, ($allMissingLines -join "`n  - "), $schemaNote)
     }
 
-    Write-Host ("[+] Replication permissions verified for '{0}'." -f $Credential.UserName)
+    Write-Host ("[+] Replication permissions verified for '{0}' on domain NC and schema NC." -f $Credential.UserName)
 }
 
 function Test-DCClockSkew {
