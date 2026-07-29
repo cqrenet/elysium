@@ -892,12 +892,21 @@ if ($UploadOnly) {
 
     $manifestHash = (Get-FileHash -Path $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
+    $resolvedLocalShardRoot = [System.IO.Path]::GetFullPath($localShardRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+
     $manifestShards = @()
     $totalSizeBytes = 0L
     foreach ($entry in ($manifestObject.shards | Sort-Object name)) {
         $name = [string]$entry.name
         if ([string]::IsNullOrWhiteSpace($name)) { continue }
         $localPath = Join-Path -Path $localShardRoot -ChildPath $name
+        # Manifest shard names are attacker-controllable if manifest.json was tampered with (requires
+        # prior local write access to the shard directory). Reject anything that resolves outside the
+        # shard root instead of trusting Join-Path to keep '..'/rooted paths contained.
+        $resolvedLocalPath = [System.IO.Path]::GetFullPath($localPath)
+        if (-not $resolvedLocalPath.StartsWith($resolvedLocalShardRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Manifest shard name '$name' resolves outside the shard directory '$localShardRoot'."
+        }
         if (-not (Test-Path -LiteralPath $localPath)) {
             throw "Shard file '$name' listed in manifest was not found under '$localShardRoot'."
         }
