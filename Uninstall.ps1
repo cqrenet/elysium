@@ -41,26 +41,20 @@ function Start-UninstallTranscript {
 function Stop-UninstallTranscript { try { Stop-Transcript | Out-Null } catch {} }
 
 function Uninstall-Elysium {
-    $ElysiumPath = Get-Location
+    $ElysiumPath = $PSScriptRoot
 
     Write-Host "Uninstalling Elysium tool from $ElysiumPath..."
 
     # Check if the Elysium directory exists
     if (Test-Path $ElysiumPath) {
-        # Schedule the script file for deletion
-        $scriptPath = $MyInvocation.MyCommand.Path
-        $deleteScript = { param($path) Remove-Item -Path $path -Force }
-        Start-Sleep -Seconds 3 # Delay to ensure the script finishes
-        Start-Process -FilePath "powershell.exe" -ArgumentList "-Command", $deleteScript, "-ArgumentList", $scriptPath -WindowStyle Hidden
-
-        # Remove the Elysium directory and all its contents
-        Remove-Item -Path $ElysiumPath -Recurse -Force -Exclude $scriptPath
-        Write-Host "Elysium tool and all related files have been removed, excluding this script. This script will be deleted shortly."
+        # PowerShell reads the whole script into memory before execution begins, so it holds no
+        # open file handle on this script - deleting the install directory (including this file)
+        # while still running is safe and needs no deferred external delete process.
+        Remove-Item -Path $ElysiumPath -Recurse -Force
+        Write-Host "Elysium tool and all related files have been removed."
     } else {
         Write-Host "Elysium directory not found. It might have been removed already, or the path is incorrect."
     }
-
-    # Additional cleanup actions can be added here if needed
 }
 
 Start-UninstallTranscript
