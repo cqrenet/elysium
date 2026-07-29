@@ -773,6 +773,15 @@ function Update-KHDB {
             $backupPath = Join-Path -Path $installPath -ChildPath ("$khdbName.bak-$ts")
             Copy-Item -LiteralPath $combinedTarget -Destination $backupPath -Force
             Write-Host ("Existing KHDB backed up to {0}" -f $backupPath)
+
+            # Each run adds one full-size backup; keep only the most recent few so a recurring
+            # scheduled job doesn't silently accumulate backups until the disk fills up.
+            $backupRetentionCount = 5
+            $staleBackups = Get-ChildItem -LiteralPath $installPath -Filter "$khdbName.bak-*" -File -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending | Select-Object -Skip $backupRetentionCount
+            foreach ($stale in $staleBackups) {
+                try { Remove-Item -LiteralPath $stale.FullName -Force } catch { Write-Warning "Could not remove old backup '$($stale.FullName)': $($_.Exception.Message)" }
+            }
         }
 
         Move-Item -LiteralPath $combinedTemp -Destination $combinedTarget -Force
