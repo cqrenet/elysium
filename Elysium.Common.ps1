@@ -1,4 +1,4 @@
-$script:ElysiumVersion = '2.4.4'
+$script:ElysiumVersion = '2.4.5'
 
 function Invoke-RestartWithExecutable {
     param(
@@ -403,8 +403,8 @@ function Test-ReplicationPermissions {
             $guid             = $rightsToCheck[$rightName]
             $granted          = $false
             $aceExistsForGuid = $false
+            $denyIdentity     = $null
             foreach ($ace in $acl) {
-                if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
                 # InheritOnly ACEs apply to child objects only - the NC root itself is not covered
                 if ([bool]($ace.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
                 $rights        = $ace.ActiveDirectoryRights
@@ -415,10 +415,22 @@ function Test-ReplicationPermissions {
                     -or ($hasExtended -and $ace.ObjectType -eq [guid]::Empty) `
                     -or ($hasExtended -and $ace.ObjectType -eq $guid)
                 if (-not $isMatch) { continue }
+                if (-not $callerSids.Contains($ace.IdentityReference.Value)) { continue }
+
+                if ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) {
+                    # Explicit Deny ACEs are evaluated before Allow ACEs in a canonical ACL and win
+                    # regardless of any Allow found elsewhere. A check that only scans Allow ACEs would
+                    # falsely report the right as granted while the actual DRS call is still denied.
+                    $denyIdentity = $ace.IdentityReference.Value
+                    continue
+                }
+
                 if ($ace.ObjectType -eq $guid) { $aceExistsForGuid = $true }
-                if ($callerSids.Contains($ace.IdentityReference.Value)) { $granted = $true; break }
+                $granted = $true
             }
-            if (-not $granted) {
+            if ($denyIdentity) {
+                $allMissingLines += "[on $ncDN] $rightName (DENIED by explicit Deny ACE for '$denyIdentity' - this overrides any Allow grant)"
+            } elseif (-not $granted) {
                 $hint = if ($aceExistsForGuid) {
                     ' (ACE exists but not assigned to this account or any of its groups)'
                 } else {
@@ -436,8 +448,15 @@ function Test-ReplicationPermissions {
                 " Grant 'Replicating Directory Changes' on CN=Configuration,$DomainDN" +
                 " (covers Schema NC via inheritance) in addition to the domain NC rights.")
         }
-        throw ("Account '{0}' failed replication permission check:`n  - {1}{2}" -f `
-            $Credential.UserName, ($allMissingLines -join "`n  - "), $schemaNote)
+        $denyNote = ''
+        if ($allMissingLines | Where-Object { $_ -match 'DENIED by explicit Deny ACE' }) {
+            $denyNote = ("`n`nNOTE: at least one right is blocked by an explicit Deny ACE, not a missing grant." +
+                " Find and remove/scope it: Advanced Security on the NC object > look for a Deny entry" +
+                " covering 'Replicating Directory Changes*' that matches this account or one of its groups" +
+                " (common with hardening baselines that Deny a broad group like Everyone/Domain Users).")
+        }
+        throw ("Account '{0}' failed replication permission check:`n  - {1}{2}{3}" -f `
+            $Credential.UserName, ($allMissingLines -join "`n  - "), $schemaNote, $denyNote)
     }
 
     Write-Host ("[+] Replication permissions verified for '{0}' on domain NC and schema NC." -f $Credential.UserName)

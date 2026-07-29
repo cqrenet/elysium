@@ -6,6 +6,16 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.4.5] — 2026-07-29
+
+### Fixed
+- `Test-ReplicationPermissions` now detects explicit **Deny** ACEs on the replication extended rights, not just missing Allow grants. Previously the pre-flight check only scanned `Allow` ACEs, so an explicit Deny (common in hardening baselines that Deny a broad group like `Everyone`/`Domain Users` the replication rights and Allow only named DCSync accounts) was invisible to the check: it reported "verified" while `Get-ADReplAccount` still failed with "Replication access was denied". The check now flags exactly which right is blocked and by which identity's Deny ACE.
+
+### Changed
+- README *Common errors* section expanded with a dedicated troubleshooting flow for "pre-flight passed but DCSync still denied" (RODC target, unconverged ACL replication, cross-domain group scope, and how to get a definitive answer via Event ID 4662 auditing).
+
+---
+
 ## [2.4.4] — 2026-06-15
 
 ### Fixed

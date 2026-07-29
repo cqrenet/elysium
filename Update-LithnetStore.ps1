@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Update-LithnetStore.ps1                ##
-## Version: 2.4.4                               ##
+## Version: 2.4.5                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 

@@ -88,8 +88,16 @@ Keep the service account disabled and only activate it for scheduled tests.
   The supplied username/password is invalid for the selected domain controller, or the session is not running in the expected domain context. Re-run and provide valid domain credentials.
 - `Account '<user>' is missing the following replication permissions ...`:
   Starting with v2.2.0, the script pre-validates the three required replication extended rights against the domain object ACL before attempting DCSync. If this error appears, delegate the listed rights (see *Least privileges* above) and retry.
-- `Replication access was denied` (from `Get-ADReplAccount`):
-  DSInternals 7.0+ fetches the AD schema via DRS (`GetNCChanges`) as its first step, before replicating any accounts. This fails if the service account lacks `Replicating Directory Changes` on the **schema NC** (`CN=Schema,CN=Configuration,DC=…`). Grant the three rights on `CN=Configuration,DC=…` (covers schema NC via inheritance) in addition to the domain NC — see *Least privileges* above. The pre-flight permission check in v2.4.4+ catches this mismatch before attempting replication.
+- `Account '<user>' failed replication permission check ... (DENIED by explicit Deny ACE for '<sid>')`:
+  The pre-flight check (v2.4.5+) also scans for explicit **Deny** ACEs on the replication extended rights, not just missing Allow grants. A Deny ACE — commonly added by hardening baselines that Deny a broad group (`Everyone`, `Domain Users`, `Authenticated Users`) the replication rights and Allow only named DCSync accounts — wins over any Allow, even one granted directly to this account. Open *Advanced Security* on the flagged NC object, find the Deny entry that matches this account or one of its groups, and either remove it or exclude the service account/its group from it.
+- `Replication access was denied` (from `Get-ADReplAccount`) **after the pre-flight check reported success**:
+  This means the ACL looks correct from LDAP but the live DRS (`GetNCChanges`) call still denies access. Known causes, roughly in likelihood order:
+  1. **Target DC is an RODC.** Read-only domain controllers enforce the Password Replication Policy and will refuse to originate a full DCSync of secrets for accounts outside their allowed replication list, regardless of ACL grants. Point `ElysiumSettings.txt` at a writable DC instead.
+  2. **ACL change hasn't converged yet.** If the rights were just delegated on a different DC than the one configured for the test, wait for AD replication to catch up (or force it with `repadmin /syncall`) before retrying.
+  3. **Explicit Deny ACE not caught by an older script version.** Update to v2.4.5+ so the pre-flight check surfaces it (see above) instead of only discovering it at DCSync time.
+  4. **Account is in a cross-domain group** whose scope isn't visible in `tokenGroups` from the DC being queried (for example, a domain-local group in a different domain). Re-delegate directly to the account or to a universal group instead.
+
+  For a definitive answer straight from the DC: enable "Audit Directory Service Access" and add a SACL for `Replicating Directory Changes*` on the domain/schema NC, then check the DC's Security event log for Event ID 4662 on the next failed run — it names the exact object and right that were denied.
 - `Only FIPS certified cryptographic algorithms are enabled in .NET`:
   This warning comes from DSInternals under FIPS-enforced environments. Hash-quality operations that rely on MD5 may be limited.
 
