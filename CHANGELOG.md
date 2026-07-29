@@ -6,6 +6,18 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.4.6] — 2026-07-29
+
+### Fixed
+- `Uninstall.ps1` used `Get-Location` (the caller's working directory) instead of `$PSScriptRoot`, so running it from any CWD other than the install folder recursively force-deleted the wrong directory. The accompanying self-delete workaround was also broken (a `-Exclude` that could never match, a deferred `Start-Process` command line that couldn't bind its argument) and has been replaced with a plain recursive delete, since PowerShell holds no open handle on a script it has already read into memory.
+- `Elysium.ps1` echoed the AES export passphrase to the console (`Read-Host` without `-AsSecureString`) and stored it in plaintext in `HKCU\Environment`. It's now DPAPI-protected via `ConvertFrom-SecureString` and never appears in plaintext at rest; `Extract-NTHashes.ps1` decrypts it back only in memory right before use.
+- `Test-ReplicationPermissions` resolved the caller's SID/tokenGroups by stripping a `DOMAIN\` prefix from the credential username, so a UPN-formatted credential (`user@domain.tld`) had nothing to strip, the AD lookup threw, and the entire DCSync ACL pre-check was silently skipped. Now handles `DOMAIN\user`, `user@domain.tld`, and bare `sAMAccountName` correctly, and also disposes the `DirectoryEntry`/ADSI objects it creates.
+- `Elysium.ps1`'s main menu had no `catch` around the switch statement, so any error re-thrown by a sub-script (bad credentials, unreachable DC, etc.) killed the whole orchestrator instead of returning to the menu.
+- `Extract-NTHashes.ps1`: the temp directory holding plaintext NTLM hashes (before AES encryption) now has its ACL restricted to the current user; a checksum mismatch after upload now deletes the corrupt remote blob instead of leaving it live under its normal name; the plaintext export is now pinned to UTF-8 instead of depending on the PowerShell host; `Protect-FileWithAES`'s output format changed from `ELY1` to `ELY2`, adding an HMAC-SHA256 trailer (encrypt-then-MAC) so a wrong passphrase or tampered/corrupted ciphertext is detected instead of silently decrypting to garbage - **this is a breaking format change for any external decryption tooling**, see the README for the new layout.
+- `Update-KHDB.ps1`: `Validate-Manifest` hardcoded `shardSize` to exactly `2`, rejecting manifests produced with any other value from `Prepare-KHDBStorage.ps1`'s supported 1-8 range; KHDB backups (`khdb.txt.bak-*`) accumulated forever with no retention policy (now capped at the 5 most recent); `Invoke-DownloadWithRetry` never disposed the `HttpResponseMessage` it got from each shard download.
+- `Prepare-KHDBStorage.ps1`: `Split-KhdbIntoShards`'s fast path for plain 32-hex-char lines wrote straight through with no deduplication (unlike the slow path's adjacent-duplicate merge); fixing that surfaced a second bug where the valid-entry counter was a plain scalar mutated inside a scriptblock invoked via the call operator (`&`), which runs in its own child scope, so the increments were silently discarded and `TotalEntries`/checkpoint `validEntries`/live progress were all wrong on every run (moved onto the existing `$meta` hashtable, which mutates by reference). Also rejects manifest shard names (`-UploadOnly` mode) that resolve outside the shard root, closing a path-traversal gap for a tampered local `manifest.json`.
+- `Test-WeakADPasswords.ps1`: report generation piped results through `Out-String` without `-Width`, so a long `SamAccountName` could be truncated by the default formatter width and silently drop its `UPN:` annotation in the report.
+
 ## [2.4.5] — 2026-07-29
 
 ### Fixed
