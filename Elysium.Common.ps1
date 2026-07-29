@@ -348,14 +348,28 @@ function Test-ReplicationPermissions {
 
     $callerSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     try {
-        $samName = $Credential.UserName -replace '^.*\\', ''
-        $adUser = Get-ADUser -Identity $samName -Server $Server -Credential $Credential `
-            -Properties SID, DistinguishedName, adminCount -ErrorAction Stop
+        # Get-ADUser -Identity accepts a DN, GUID, SID, or sAMAccountName - but NOT a UPN. A
+        # UPN-formatted credential (user@domain.tld) has no backslash, so naively stripping a
+        # 'DOMAIN\' prefix left the full UPN in place, -Identity threw, and this whole pre-check
+        # was silently skipped (caught below) regardless of how the username was typed.
+        $rawUserName = $Credential.UserName
+        if ($rawUserName -match '^[^\\]+\\(.+)$') {
+            $adUser = Get-ADUser -Identity $Matches[1] -Server $Server -Credential $Credential `
+                -Properties SID, DistinguishedName, adminCount -ErrorAction Stop
+        } elseif ($rawUserName -match '@') {
+            $adUser = Get-ADUser -Filter "UserPrincipalName -eq '$rawUserName'" -Server $Server -Credential $Credential `
+                -Properties SID, DistinguishedName, adminCount -ErrorAction Stop | Select-Object -First 1
+            if (-not $adUser) { throw "No AD user found with UserPrincipalName '$rawUserName'." }
+        } else {
+            $adUser = Get-ADUser -Identity $rawUserName -Server $Server -Credential $Credential `
+                -Properties SID, DistinguishedName, adminCount -ErrorAction Stop
+        }
         [void]$callerSids.Add($adUser.SID.Value)
 
         # tokenGroups is a constructed attribute containing all SIDs in the user's token,
-        # including nested group memberships - more reliable than walking MemberOf recursively
-        $adUserWithTokenGroups = Get-ADUser -Identity $samName -Server $Server -Credential $Credential `
+        # including nested group memberships - more reliable than walking MemberOf recursively.
+        # Look up by DistinguishedName (unambiguous) rather than re-deriving the username format.
+        $adUserWithTokenGroups = Get-ADUser -Identity $adUser.DistinguishedName -Server $Server -Credential $Credential `
             -Properties tokenGroups -ErrorAction Stop
         foreach ($sidBytes in $adUserWithTokenGroups.tokenGroups) {
             $sid = New-Object System.Security.Principal.SecurityIdentifier(@([byte[]]$sidBytes), 0)
