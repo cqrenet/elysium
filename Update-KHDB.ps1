@@ -264,8 +264,11 @@ function Validate-Manifest {
         if (-not $seen.Add($name)) { throw "Manifest contains duplicate shard name '$name'." }
     }
 
-    if ($Manifest.shardSize -and [int]$Manifest.shardSize -ne 2) {
-        throw "Manifest shardSize $($Manifest.shardSize) is not supported. Expected shardSize 2."
+    # Merge-ShardsToFile reads shard files purely by name/content and doesn't use shardSize for
+    # anything structural, so any prefix length Prepare-KHDBStorage.ps1 can produce (1-8, see its
+    # -ShardSize ValidateRange) is fine here - only reject something outside that supported range.
+    if ($Manifest.shardSize -and ([int]$Manifest.shardSize -lt 1 -or [int]$Manifest.shardSize -gt 8)) {
+        throw "Manifest shardSize $($Manifest.shardSize) is out of the supported range (1-8)."
     }
 }
 
