@@ -7,7 +7,7 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Extract-NTHashes.ps1                   ##
-## Version: 2.4.5                               ##
+## Version: 2.4.6                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -134,8 +134,15 @@ function Protect-FileWithAES {
     $salt = New-Object byte[] 16
     $rng.GetBytes($salt)
 
+    # Derive two independent keys from one PBKDF2 byte stream: the first 32 bytes for AES-256, the
+    # next 32 for HMAC-SHA256 (Rfc2898DeriveBytes.GetBytes returns a continuous stream across
+    # calls on the same instance, so these two ranges never overlap). CBC alone gives no integrity
+    # check - tampered or corrupted ciphertext just decrypts to garbage (or throws an unhelpful
+    # padding exception) instead of being detected. Encrypt-then-MAC over magic+salt+iv+ciphertext
+    # (format 'ELY2') catches both. Older 'ELY1' files this script produced have no MAC.
     $kdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Passphrase, $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
-    $key = $kdf.GetBytes(32)
+    $aesKey = $kdf.GetBytes(32)
+    $hmacKey = $kdf.GetBytes(32)
 
     $aes = [System.Security.Cryptography.Aes]::Create()
     $aes.KeySize = 256
@@ -143,34 +150,24 @@ function Protect-FileWithAES {
     $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
     $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
     $aes.GenerateIV()
-
     $iv = $aes.IV
-    $encryptor = $aes.CreateEncryptor($key, $iv)
 
-    $fileStream = [System.IO.File]::Open($InputFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read)
-    $outFileStream = [System.IO.File]::Create($OutputFile)
-
+    $encryptor = $aes.CreateEncryptor($aesKey, $iv)
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new($hmacKey)
     try {
-        $magic = [System.Text.Encoding]::ASCII.GetBytes('ELY1')
-        $outFileStream.Write($magic, 0, $magic.Length)
-        $outFileStream.Write($salt, 0, $salt.Length)
-        $outFileStream.Write($iv, 0, $iv.Length)
+        $plainBytes = [System.IO.File]::ReadAllBytes($InputFile)
+        $cipherBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
 
-        $cryptoStream = New-Object System.Security.Cryptography.CryptoStream($outFileStream, $encryptor, [System.Security.Cryptography.CryptoStreamMode]::Write)
-        try {
-            $buffer = New-Object Byte[] 8192
-            while (($read = $fileStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                $cryptoStream.Write($buffer, 0, $read)
-            }
-        } finally {
-            $cryptoStream.FlushFinalBlock()
-            $cryptoStream.Close()
-        }
+        $magic = [System.Text.Encoding]::ASCII.GetBytes('ELY2')
+        $header = $magic + $salt + $iv
+        $mac = $hmac.ComputeHash($header + $cipherBytes)
+
+        [System.IO.File]::WriteAllBytes($OutputFile, ($header + $cipherBytes + $mac))
     } finally {
-        $outFileStream.Close(); $fileStream.Close(); $aes.Dispose(); $rng.Dispose(); $kdf.Dispose()
+        $encryptor.Dispose(); $hmac.Dispose(); $aes.Dispose(); $rng.Dispose(); $kdf.Dispose()
     }
 
-    Write-Host "File has been encrypted (PBKDF2+AES-256-CBC): $OutputFile"
+    Write-Host "File has been encrypted (PBKDF2+AES-256-CBC+HMAC-SHA256): $OutputFile"
 }
 
 function Get-FileChecksum {
