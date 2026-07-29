@@ -23,6 +23,14 @@ This script will connect to selected domain (defined in ElysiumSettings.txt) usi
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Ensure consistent UTF-8 output for files across PS5.1/PS7 (Out-File defaults to UTF-16LE on
+# Desktop edition and UTF-8 on Core, so the plaintext hash export's encoding would otherwise
+# depend purely on which PowerShell host happens to run it).
+try {
+    $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+    $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+} catch { }
+
 $scriptRoot = $PSScriptRoot
 
 [string]$commonHelper = Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.Common.ps1'
