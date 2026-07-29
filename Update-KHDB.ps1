@@ -76,6 +76,7 @@ function Invoke-DownloadWithRetry {
     $retries = 5
     $delay = 2
     for ($attempt = 0; $attempt -lt $retries; $attempt++) {
+        $response = $null
         try {
             $response = $Client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
             if (-not $response.IsSuccessStatusCode) {
@@ -115,6 +116,8 @@ function Invoke-DownloadWithRetry {
             } else {
                 throw
             }
+        } finally {
+            if ($response) { $response.Dispose() }
         }
     }
 }
