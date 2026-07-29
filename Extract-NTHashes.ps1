@@ -190,9 +190,15 @@ try {
     try { $s3ForcePathStyle = [System.Convert]::ToBoolean($s3ForcePathStyle) } catch { $s3ForcePathStyle = $true }
     try { $s3UseAwsTools = [System.Convert]::ToBoolean($s3UseAwsTools) } catch { $s3UseAwsTools = $false }
 
-    # Retrieve the passphrase from a user environment variable
-    $passphrase = [System.Environment]::GetEnvironmentVariable("ELYSIUM_PASSPHRASE", [System.EnvironmentVariableTarget]::User)
-    if ([string]::IsNullOrWhiteSpace($passphrase)) { throw 'Passphrase not found in ELYSIUM_PASSPHRASE environment variable.' }
+    # Retrieve the DPAPI-protected passphrase from a user environment variable (see Elysium.ps1)
+    $protectedPassphrase = [System.Environment]::GetEnvironmentVariable("ELYSIUM_PASSPHRASE", [System.EnvironmentVariableTarget]::User)
+    if ([string]::IsNullOrWhiteSpace($protectedPassphrase)) { throw 'Passphrase not found in ELYSIUM_PASSPHRASE environment variable. Run Elysium.ps1 once to set it.' }
+    try {
+        $securePassphrase = ConvertTo-SecureString -String $protectedPassphrase -ErrorAction Stop
+    } catch {
+        throw "ELYSIUM_PASSPHRASE is not in the expected DPAPI-protected format (leftover from an older Elysium version?). Re-run Elysium.ps1 to re-enter it."
+    }
+    $passphrase = [System.Net.NetworkCredential]::new('', $securePassphrase).Password
 
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 

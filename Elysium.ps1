@@ -39,17 +39,26 @@ if (-Not (Test-Path $settingsFilePath)) {
     Write-Host "ElysiumSettings.txt found."
 }
 
-# Attempt to retrieve the passphrase from the environment variable
-$passphrase = [System.Environment]::GetEnvironmentVariable("ELYSIUM_PASSPHRASE", [System.EnvironmentVariableTarget]::User)
+# The passphrase is persisted DPAPI-protected (current user + machine) via ConvertFrom-SecureString,
+# never in plaintext, so it's only prompted for once per user/machine and never echoed to the console.
+$storedPassphrase = [System.Environment]::GetEnvironmentVariable("ELYSIUM_PASSPHRASE", [System.EnvironmentVariableTarget]::User)
 
-if ([string]::IsNullOrEmpty($passphrase)) {
+$havePassphrase = $false
+if (-not [string]::IsNullOrEmpty($storedPassphrase)) {
+    try {
+        [void](ConvertTo-SecureString -String $storedPassphrase -ErrorAction Stop)
+        $havePassphrase = $true
+        Write-Host "Passphrase found in environment variables."
+    } catch {
+        Write-Warning "Stored passphrase is not in the expected protected format (leftover from an older Elysium version?). Re-enter it."
+    }
+}
+
+if (-not $havePassphrase) {
     Write-Host "No passphrase found in environment variables."
-    $passphrase = Read-Host "Please enter your passphrase."
-    # Here you could choose to set the environment variable or simply use the passphrase for the current session
-    [System.Environment]::SetEnvironmentVariable("ELYSIUM_PASSPHRASE", $passphrase, [System.EnvironmentVariableTarget]::User)
-    Write-Host "Passphrase stored as environment variable 'ELYSIUM_PASSPHRASE'."
-} else {
-    Write-Host "Passphrase found in environment variables."
+    $securePassphrase = Read-Host "Please enter your passphrase" -AsSecureString
+    [System.Environment]::SetEnvironmentVariable("ELYSIUM_PASSPHRASE", (ConvertFrom-SecureString -SecureString $securePassphrase), [System.EnvironmentVariableTarget]::User)
+    Write-Host "Passphrase stored (DPAPI-protected) as environment variable 'ELYSIUM_PASSPHRASE'."
 }
 
 function Start-OrchestratorTranscript {
