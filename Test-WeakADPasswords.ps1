@@ -725,7 +725,10 @@ function Test-WeakADPasswords {
     }
 
     Write-Verbose "Generating report at $reportPath"
-    $reportContent = @($header, ($testResults | Out-String).Trim(), $footer) -join "`r`n"
+    # -Width prevents PowerShell's default table formatter from truncating long columns (e.g. a
+    # long SamAccountName) at console/default width, which would otherwise silently break the
+    # first-token re-parse below used to attach "UPN:" lines to dictionary hits.
+    $reportContent = @($header, ($testResults | Out-String -Width 4096).Trim(), $footer) -join "`r`n"
 
     $lines = $reportContent -split "`r`n"
     $newReportContent = @()
