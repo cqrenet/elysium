@@ -250,6 +250,21 @@ try {
     # never written to the installation directory and are always cleaned up.
     $tmpDir = New-Item -ItemType Directory -Path ([System.IO.Path]::Combine(
         [System.IO.Path]::GetTempPath(), "elysium-extract-" + [System.Guid]::NewGuid())) -Force
+    try {
+        # Plaintext NTLM hashes land in this directory before AES protection is applied below.
+        # Strip inherited ACEs (e.g. a broad "Users" grant on the parent Temp folder) so only the
+        # current user can read it while the finally block's cleanup hasn't run yet.
+        $dirAcl = $tmpDir.GetAccessControl()
+        $dirAcl.SetAccessRuleProtection($true, $false)
+        $currentUserRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            [System.Security.Principal.WindowsIdentity]::GetCurrent().User,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        $dirAcl.AddAccessRule($currentUserRule)
+        $tmpDir.SetAccessControl($dirAcl)
+    } catch {
+        Write-Warning "Could not restrict ACL on temporary directory '$($tmpDir.FullName)': $($_.Exception.Message)"
+    }
     $exportPath         = Join-Path -Path $tmpDir.FullName -ChildPath "$baseName.txt"
     $compressedFilePath = Join-Path -Path $tmpDir.FullName -ChildPath "$baseName.zip"
     $encryptedFilePath  = Join-Path -Path $tmpDir.FullName -ChildPath "$baseName.enc"
