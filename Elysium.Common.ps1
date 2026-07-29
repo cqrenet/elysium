@@ -400,6 +400,7 @@ function Test-ReplicationPermissions {
         $rightsToCheck = $ncEntry.Value
 
         $acl = $null
+        $de = $null
         try {
             $de = New-Object System.DirectoryServices.DirectoryEntry(
                 "LDAP://$Server/$ncDN",
@@ -411,6 +412,8 @@ function Test-ReplicationPermissions {
         } catch {
             Write-Warning ("Could not read ACL on '$ncDN' for replication permission pre-check: {0}. Skipping." -f $_.Exception.Message)
             continue
+        } finally {
+            if ($de) { $de.Dispose() }
         }
 
         foreach ($rightName in $rightsToCheck.Keys) {
@@ -481,6 +484,7 @@ function Test-DCClockSkew {
         [Parameter(Mandatory)][string]$Server,
         [Parameter(Mandatory)][System.Management.Automation.PSCredential]$Credential
     )
+    $rootDse = $null
     try {
         $rootDse = New-Object System.DirectoryServices.DirectoryEntry(
             "LDAP://$Server/RootDSE",
@@ -502,5 +506,7 @@ function Test-DCClockSkew {
         }
     } catch {
         Write-Warning ("Could not check clock skew against '{0}': {1}" -f $Server, $_.Exception.Message)
+    } finally {
+        if ($rootDse) { $rootDse.Dispose() }
     }
 }
