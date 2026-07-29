@@ -109,6 +109,7 @@ try {
 do {
     Show-Menu
     $userSelection = Read-Host "Please make a selection"
+    try {
     switch ($userSelection) {
         '1' {
             Write-Host "Downloading KHDB..."
@@ -148,6 +149,9 @@ do {
         default {
             Write-Host "Invalid selection, please try again."
         }
+    }
+    } catch {
+        Write-Error ("An error occurred while running the selected option: {0}" -f $_.Exception.Message)
     }
     pause
 } while ($userSelection -ne '6')
