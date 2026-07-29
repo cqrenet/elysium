@@ -241,14 +241,19 @@ function Split-KhdbIntoShards {
 
     $shardStates = @{}
     $stats = @{}
-    $total = 0L
     $resumeFilePosition = 0L
 
+    # ValidEntries lives on $meta (a hashtable, i.e. reference type) rather than as its own scalar
+    # variable because $processHashLine below is invoked via the call operator (&), which runs in
+    # its own child scope - a bare scalar '$total++' inside it would silently increment a local
+    # shadow copy and never update the caller's variable. Mutating a property on a shared
+    # hashtable/object works fine across that scope boundary.
     $meta = @{
         TotalLines = 0L
         InvalidLines = 0L
         SkippedLines = 0L
         LegacyLines = 0L
+        ValidEntries = 0L
         InvalidSamples = New-Object System.Collections.Generic.List[string]
     }
 
@@ -271,7 +276,7 @@ function Split-KhdbIntoShards {
         if ($ResumeState.totalLines) { $meta.TotalLines = [long]$ResumeState.totalLines }
         if ($ResumeState.invalidLines) { $meta.InvalidLines = [long]$ResumeState.invalidLines }
         if ($ResumeState.skippedLines) { $meta.SkippedLines = [long]$ResumeState.skippedLines }
-        if ($ResumeState.validEntries) { $total = [long]$ResumeState.validEntries }
+        if ($ResumeState.validEntries) { $meta.ValidEntries = [long]$ResumeState.validEntries }
         if ($ResumeState.filePosition) { $resumeFilePosition = [long]$ResumeState.filePosition }
     }
     $plainReader = $null
@@ -371,7 +376,7 @@ function Split-KhdbIntoShards {
             totalLines     = [long]$meta.TotalLines
             invalidLines   = [long]$meta.InvalidLines
             skippedLines   = [long]$meta.SkippedLines
-            validEntries   = [long]$total
+            validEntries   = [long]$meta.ValidEntries
             shardStates    = @()
         }
         foreach ($entry in ($shardStates.GetEnumerator() | Sort-Object Key)) {
@@ -403,7 +408,7 @@ function Split-KhdbIntoShards {
         if ([string]::IsNullOrWhiteSpace($statusContext)) {
             $statusContext = if ($currentSource) { Split-Path -Leaf $currentSource } else { 'input' }
         }
-        $status = "Processed {0:N0} hashes (+{1:N0} invalid, {2:N0} skipped, {3:N0} lines) [{4}]" -f $total, $meta.InvalidLines, $meta.SkippedLines, $meta.TotalLines, $statusContext
+        $status = "Processed {0:N0} hashes (+{1:N0} invalid, {2:N0} skipped, {3:N0} lines) [{4}]" -f $meta.ValidEntries, $meta.InvalidLines, $meta.SkippedLines, $meta.TotalLines, $statusContext
         Write-Progress -Activity $ProgressActivity -Status $status -PercentComplete 0
         if ($EnableCheckpoint -and $plainReader) {
             $checkpointPosition = if ($plainBaseStream) { $plainBaseStream.Position } else { $plainReader.BaseStream.Position }
@@ -427,12 +432,26 @@ function Split-KhdbIntoShards {
             return
         }
 
-        # Fast path for valid 32-char hex lines
+        # Fast path for valid 32-char hex lines. Routes through the same pending-line dedup as the
+        # slow path below (adjacent identical hashes are dropped) instead of writing straight
+        # through - the source is expected to be pre-sorted, so only *adjacent* duplicates are
+        # caught either way, but the fast path used to skip this entirely and write every
+        # duplicate straight to the shard.
         if ($rawLine.Length -eq 32 -and $rawLine -match '^[0-9A-Fa-f]{32}$') {
-            $prefixKey = $rawLine.Substring(0, $PrefixLength).ToLowerInvariant()
-            $shardStates[$prefixKey].Writer.WriteLine($rawLine.ToUpperInvariant())
+            $normalizedHash = $rawLine.ToUpperInvariant()
+            $prefixKey = $normalizedHash.Substring(0, $PrefixLength).ToLowerInvariant()
+            $state = $shardStates[$prefixKey]
+            if ($state.PendingHash -ne $normalizedHash) {
+                if ($state.PendingLine) {
+                    $state.Writer.WriteLine($state.PendingLine)
+                    $state.Count++
+                    $meta.ValidEntries++
+                }
+                $state.PendingLine = $normalizedHash
+                $state.PendingHash = $normalizedHash
+                $state.PendingCount = 0
+            }
             $meta.TotalLines++
-            $total++
             return
         }
 
@@ -517,7 +536,7 @@ function Split-KhdbIntoShards {
             if ($state.PendingLine) {
                 $state.Writer.WriteLine($state.PendingLine)
                 $state.Count++
-                $total++
+                $meta.ValidEntries++
             }
             $state.PendingLine = $normalizedLine
             $state.PendingHash = $normalizedHash
@@ -651,7 +670,7 @@ function Split-KhdbIntoShards {
         if ($state.PendingLine) {
             $state.Writer.WriteLine($state.PendingLine)
             $state.Count++
-            $total++
+            $meta.ValidEntries++
             $state.PendingLine = $null
         }
         $state.Writer.Dispose()
@@ -661,13 +680,13 @@ function Split-KhdbIntoShards {
         }
     }
 
-    if ($total -eq 0) { throw 'Source did not contain any valid hashes after processing.' }
+    if ($meta.ValidEntries -eq 0) { throw 'Source did not contain any valid hashes after processing.' }
     if ($ShowProgress) {
-        $status = "Processed {0:N0} hashes (+{1:N0} invalid, {2:N0} skipped, {3:N0} lines)" -f $total, $meta.InvalidLines, $meta.SkippedLines, $meta.TotalLines
+        $status = "Processed {0:N0} hashes (+{1:N0} invalid, {2:N0} skipped, {3:N0} lines)" -f $meta.ValidEntries, $meta.InvalidLines, $meta.SkippedLines, $meta.TotalLines
         Write-Progress -Activity $ProgressActivity -Status $status -Completed
     }
     return [pscustomobject]@{
-        TotalEntries = [long]$total
+        TotalEntries = [long]$meta.ValidEntries
         ShardStats   = $stats
         TotalLines   = [long]$meta.TotalLines
         InvalidLines = [long]$meta.InvalidLines
