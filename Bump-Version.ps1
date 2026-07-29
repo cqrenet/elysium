@@ -8,13 +8,11 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Bump-Version.ps1                       ##
-## Version: 2.4.4                               ##
+## Version: 2.4.5                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
 #Requires -Version 5.1
-$ErrorActionPreference = 'Stop'
-Set-StrictMode -Version Latest
 
 <#
 .SYNOPSIS
@@ -40,6 +38,9 @@ param(
 
     [switch]$SkipChangelog
 )
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 
 $scriptRoot = $PSScriptRoot
 if (-not $scriptRoot) { $scriptRoot = (Get-Location).Path }
