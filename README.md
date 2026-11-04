@@ -111,15 +111,15 @@ Domains are listed in configuration order, after which the script prompts for th
 **Encrypted export format (v2.4.5+, magic `ELY2`):** `4-byte magic 'ELY2' | 16-byte PBKDF2 salt | 16-byte AES IV | AES-256-CBC ciphertext | 32-byte HMAC-SHA256`. Both keys are derived from the configured passphrase via one PBKDF2-SHA256 (100,000 iterations) byte stream: the first 32 bytes are the AES key, the next 32 are the HMAC key. The HMAC covers `magic | salt | iv | ciphertext` (encrypt-then-MAC) so a decrypt tool must verify it *before* decrypting - CBC alone doesn't detect a wrong passphrase or corrupted/tampered ciphertext, it just produces garbage or an unhelpful padding exception. This is a breaking change from the older `ELY1` format (no HMAC trailer) produced before v2.4.5; any external decryption tooling on the air-gapped cracking machine needs updating to match.
 
 ### Update Lithnet Password Protection store
-Run script Elysium.ps1 as an administrator and choose option 5 (Update Lithnet Password Protection Store).
+Run script Elysium.ps1 as an administrator and choose option 4 (Update Lithnet Password Protection Store).
 Configure the target folder via `LithnetStorePath` in `ElysiumSettings.txt` (the location created with `Open-Store`). The script automatically imports the `khdb.txt` file unless you override/add additional NTLM hash lists in `LithnetHashSources` (comma or semicolon separated). You can also populate plaintext password lists (`LithnetPlaintextSources`) and banned-word files (`LithnetBannedWordSources`), or enable `LithnetSyncHibp=true` to seed the store directly from the Have I Been Pwned API (using `Sync-HashesFromHibp`). Behind the scenes the helper loads the `LithnetPasswordProtection` module, opens the store, runs [`Import-CompromisedPasswordHashes`](https://docs.lithnet.io/password-protection/advanced-help/powershell-reference/import-compromisedpasswordhashes)/`Import-CompromisedPasswords`/`Import-BannedWords` for each configured file, and then closes the store.
 
 S3-compatible usage notes:
 - No AWS Tools required. The scripts sign requests using native SigV4 via .NET and HttpClient, including non-default endpoint ports.
 - To force using AWS Tools instead, set `s3UseAwsTools = true` in `ElysiumSettings.txt` and install `AWS.Tools.S3`.
 ### Uninstallation
-Run script Elysium.ps1 as an administrator and choose option 4 (Uninstall).
-The script will then delete everything and remove the passphrase variable.
+Run script Elysium.ps1 as an administrator and choose option 5 (Uninstall).
+After you type `YES` to confirm, the script deletes everything (including reports, the KHDB, and settings) and removes the passphrase variable. Run `.\Uninstall.ps1 -Force` to skip the confirmation.
 ---
 ## FAQ
 

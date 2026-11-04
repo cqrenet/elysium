@@ -20,8 +20,8 @@ Elysium.ps1 offers a menu to perform various actions:
 1. Download/Update Known-Hashes Database (KHDB)
 2. Test Weak AD Passwords
 3. Extract and Send Current Hashes for KHDB Update
-4. Uninstall the tool
-5. Update Lithnet Password Protection store
+4. Update Lithnet Password Protection store
+5. Uninstall the tool
 6. Exit
 #>
 

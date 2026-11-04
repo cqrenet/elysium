@@ -17,7 +17,12 @@ Uninstall script for the Elysium AD password testing tool.
 
 .DESCRIPTION
 This script will remove the Elysium tool and its components (scripts, configurations, and any generated data) from the system, and then delete itself.
+
+.PARAMETER Force
+Skip the confirmation prompt (for unattended removal).
 #>
+
+param([switch]$Force)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -59,6 +64,16 @@ function Uninstall-Elysium {
 
 Start-UninstallTranscript
 try {
+    # The delete is recursive and irreversible (reports, KHDB, settings included), so a mistyped
+    # menu choice or a stale doc reference must not be enough to trigger it.
+    if (-not $Force) {
+        $answer = Read-Host "This permanently deletes '$PSScriptRoot' including all reports, the KHDB and settings. Type YES to continue"
+        if ($answer -cne 'YES') {
+            Write-Host 'Uninstall cancelled.'
+            return
+        }
+    }
+
     # Execute the uninstall function
     Uninstall-Elysium
 
