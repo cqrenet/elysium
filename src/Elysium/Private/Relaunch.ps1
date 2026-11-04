@@ -1,4 +1,5 @@
-# pwsh <-> Windows PowerShell relaunch helpers, called by the root scripts before they do any work.
+# Windows PowerShell relaunch for the AD wrappers (Test-WeakADPasswords.ps1, Extract-NTHashes.ps1),
+# which dot-source this file before importing the module: DSInternals/ActiveDirectory need Desktop.
 
 function Invoke-RestartWithExecutable {
     param(
@@ -32,21 +33,6 @@ function Invoke-RestartWithExecutable {
 
     & $ExecutablePath @argList
     exit $LASTEXITCODE
-}
-
-function Restart-WithPwshIfAvailable {
-    param(
-        [hashtable]$BoundParameters,
-        [object[]]$UnboundArguments
-    )
-
-    if ($PSVersionTable.PSVersion.Major -ge 7 -or $PSVersionTable.PSEdition -eq 'Core') { return }
-    $pwsh = Get-Command -Name 'pwsh' -ErrorAction SilentlyContinue
-    if (-not $pwsh) { return }
-    Write-Host ("PowerShell 7 detected at '{0}'; relaunching script under pwsh..." -f $pwsh.Path)
-    # $PSCommandPath here would be this helper file (where the function is defined), not the
-    # script being relaunched; $MyInvocation.PSCommandPath is the script that called us.
-    Invoke-RestartWithExecutable -ExecutablePath $pwsh.Path -ScriptPath $MyInvocation.PSCommandPath -BoundParameters $BoundParameters -UnboundArguments $UnboundArguments
 }
 
 function Restart-WithWindowsPowerShellIfAvailable {

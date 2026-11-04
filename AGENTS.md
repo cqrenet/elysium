@@ -25,7 +25,6 @@ The tool performs three core workflows:
 
 ```
 Elysium.ps1                    # Main menu / orchestrator script
-Elysium.Common.ps1             # Transitional loader: dot-sources src/Elysium/Private/*.ps1 into the calling script
 ElysiumSettings.txt            # Live configuration (key=value format, # comments)
 ElysiumSettings.txt.sample     # Documented template for operators
 
@@ -64,13 +63,10 @@ Key sections:
 
 ## PowerShell Edition Handling
 
-This project has nuanced PowerShell edition rules that must be preserved:
-
-- **Scripts that benefit from parallelism** (`Update-KHDB.ps1`, `Prepare-KHDBStorage.ps1`, `Update-LithnetStore.ps1`, `Uninstall.ps1`) auto-relaunch under `pwsh` (PowerShell 7+) via `Restart-WithPwshIfAvailable` in `Elysium.Common.ps1`.
-- **Scripts that require legacy modules** (`Test-WeakADPasswords.ps1`, `Extract-NTHashes.ps1`) auto-relaunch under `Windows PowerShell` (`powershell.exe`) via `Restart-WithWindowsPowerShellIfAvailable`, because `DSInternals` and `ActiveDirectory` often need the Desktop edition.
-- `Elysium.ps1` (the menu) checks `$PSVersionTable.PSEdition` and invokes the appropriate child process for options 2 and 3.
-
-When modifying any script, keep the `. $commonHelper` import and the corresponding `Restart-With*IfAvailable` call at the top.
+- The module runs on Windows PowerShell 5.1 and PowerShell 7. Nothing needs pwsh: concurrency uses `Invoke-InModuleRunspace`, which works on both.
+- **The AD wrappers** (`Test-WeakADPasswords.ps1`, `Extract-NTHashes.ps1`) dot-source `src/Elysium/Private/Relaunch.ps1` and call `Restart-WithWindowsPowerShellIfAvailable` before importing the module, because `DSInternals` and `ActiveDirectory` often need the Desktop edition. Keep that call at the top of those two wrappers.
+- `Elysium.ps1` (the menu) checks `$PSVersionTable.PSEdition` and starts options 2 and 3 under `powershell.exe` when it runs in pwsh.
+- `tools/Prepare-KHDBStorage.ps1` is standalone and runs on any OS with pwsh (the provider runs it on macOS).
 
 ## Code Style Guidelines
 
@@ -79,7 +75,7 @@ When modifying any script, keep the `. $commonHelper` import and the correspondi
   $ErrorActionPreference = 'Stop'
   Set-StrictMode -Version Latest
   ```
-- Every operational script starts a **transcript** into `Reports/logs/` (or `%TEMP%` for uninstall) and stops it in a `finally` block.
+- Every cmdlet starts a **transcript** with `Start-ElysiumTranscript` (into `Reports/logs/`; `Uninstall.ps1` uses `%TEMP%`) and stops it in a `finally` block.
 - Functions use `Verb-Noun` naming. Private helpers are also `Verb-Noun`.
 - Settings parsing is done manually via `Get-Content` and string splitting on `=`, not `ConvertFrom-StringData`.
 - Paths are resolved relative to `$PSScriptRoot` whenever possible.
@@ -129,6 +125,6 @@ No CI pipeline exists. Two automated checks, both runnable on any OS with `pwsh`
 
 - Do **not** introduce new package-manager files (e.g., `package.json`, `pyproject.toml`, `Cargo.toml`). This project is intentionally dependency-light and script-driven.
 - When adding new settings, keep the `key=value` flat format and update both `ElysiumSettings.txt.sample` and any parser that reads the file.
-- If you add a new operational script, include the standard banner, strict mode, transcript logging, and the `Elysium.Common.ps1` relauncher pattern.
+- New functionality goes into the module: a cmdlet in `src/Elysium/Public/` (added to `FunctionsToExport` in the manifest), helpers in `src/Elysium/Private/`. Add a thin root wrapper (banner, strict mode, `Import-Module`, call) only if operators run it directly or from the menu. Module code must not call `exit` (it would end the caller's session); use `return` or `throw`.
 - The version lives only in `src/Elysium/Elysium.psd1` (`ModuleVersion`); code reads it as `$ElysiumVersion`. Do not add version numbers to file banners.
 - The `.gitignore` excludes `khdb.txt`, `ElysiumSettings.txt`, `Reports/`, `khdb-shards/`, and `khdb-manifest.json`. Exception: `khdb.txt` has been tracked since the first commit, so the ignore rule does not apply to it. Do not `git rm` it casually - client clones have a locally modified `khdb.txt`, and an upstream deletion makes their `git pull` fail.
