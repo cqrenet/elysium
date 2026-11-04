@@ -18,7 +18,16 @@ Known-hashes database updater for the Elysium AD password testing tool.
 Downloads a sharded KHDB manifest, performs incremental shard updates, validates
 checksums, and atomically refreshes the merged khdb.txt for downstream scripts.
 Supports Azure Blob Storage (via SAS) and S3-compatible endpoints (SigV4).
+
+.PARAMETER MaxParallelTransfers
+Concurrent shard downloads on PowerShell 7+ (default 5).
 #>
+
+[CmdletBinding()]
+param(
+    [ValidateRange(1, 64)]
+    [int]$MaxParallelTransfers = 5
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -798,5 +807,5 @@ function Update-KHDB {
     }
 }
 
-Update-KHDB
+Update-KHDB @PSBoundParameters
 Write-Host "Script execution completed."
