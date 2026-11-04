@@ -164,3 +164,60 @@ Describe 'Update-ElysiumKhdb (incremental sync against a fake Azure container)' 
             '00112233445566778899AABBCCDDEEFF', '00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
     }
 }
+
+Describe 'Update-ElysiumLithnetStore' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '../src/Elysium/Elysium.psd1') -Force
+        # Stand-ins for the LithnetPasswordProtection cmdlets, so they can be mocked on any OS.
+        $lithnetCommands = 'Open-Store', 'Close-Store', 'Sync-HashesFromHibp', 'Import-CompromisedPasswordHashes', 'Import-CompromisedPasswords', 'Import-BannedWords'
+        foreach ($name in $lithnetCommands) { New-Item -Path "function:global:$name" -Value { param($Path, $Filename) } -Force | Out-Null }
+
+        $root = Join-Path $TestDrive 'lithnet'
+        New-Item -ItemType Directory -Path (Join-Path $root 'store'), (Join-Path $root 'data') -Force | Out-Null
+        & (Get-Module Elysium) { param($r) $script:InstallRoot = $r } $root
+        $khdb = Join-Path $root 'data/custom.txt'
+        $plain = Join-Path $root 'plain.txt'
+        $banned = Join-Path $root 'banned.txt'
+        Set-Content -LiteralPath $khdb, $plain, $banned -Value 'x'
+        Set-Content -LiteralPath (Join-Path $root 'ElysiumSettings.txt') -Value @(
+            "LithnetStorePath=$(Join-Path $root 'store')"
+            'InstallationPath=data'
+            'WeakPasswordsDatabase=custom.txt'
+            "LithnetPlaintextSources=$plain"
+            'LithnetSyncHibp=true')
+    }
+
+    BeforeEach {
+        foreach ($name in $lithnetCommands) { Mock -ModuleName Elysium $name {} }
+        Mock -ModuleName Elysium Import-Module {} -ParameterFilter { $Name -contains 'LithnetPasswordProtection' }
+    }
+
+    AfterAll {
+        foreach ($name in $lithnetCommands) { Remove-Item -Path "function:global:$name" -ErrorAction SilentlyContinue }
+    }
+
+    It 'imports the configured KHDB by default, merges settings and parameter sources, and syncs HIBP' {
+        Update-ElysiumLithnetStore -BannedWordFiles $banned 6>$null
+        Should -Invoke Import-CompromisedPasswordHashes -ModuleName Elysium -Times 1 -Exactly -ParameterFilter { $Filename -eq (Resolve-Path -LiteralPath $khdb).Path }
+        Should -Invoke Import-CompromisedPasswords -ModuleName Elysium -Times 1 -Exactly -ParameterFilter { $Filename -eq (Resolve-Path -LiteralPath $plain).Path }
+        Should -Invoke Import-BannedWords -ModuleName Elysium -Times 1 -Exactly -ParameterFilter { $Filename -eq (Resolve-Path -LiteralPath $banned).Path }
+        Should -Invoke Sync-HashesFromHibp -ModuleName Elysium -Times 1 -Exactly
+        Should -Invoke Close-Store -ModuleName Elysium -Times 1 -Exactly
+    }
+
+    It 'skips the HIBP sync with -SkipHibpSync' {
+        Update-ElysiumLithnetStore -SkipHibpSync 6>$null
+        Should -Invoke Sync-HashesFromHibp -ModuleName Elysium -Times 0 -Exactly
+    }
+
+    It 'closes the store even when an import fails' {
+        Mock -ModuleName Elysium Import-CompromisedPasswords { throw 'import failed' }
+        { Update-ElysiumLithnetStore -SkipHibpSync 6>$null } | Should -Throw '*import failed*'
+        Should -Invoke Close-Store -ModuleName Elysium -Times 1 -Exactly
+    }
+
+    It 'names the KHDB path it looked for when it is missing' {
+        Remove-Item -LiteralPath $khdb
+        { Update-ElysiumLithnetStore -SkipHibpSync 6>$null } | Should -Throw "*KHDB was not found at '$khdb'*"
+    }
+}

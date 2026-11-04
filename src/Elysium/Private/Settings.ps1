@@ -54,3 +54,18 @@ function Get-BooleanSetting {
     if ([System.Boolean]::TryParse($Value, [ref]$parsed)) { return $parsed }
     return $Default
 }
+
+function Get-ListFromSetting {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return @() }
+    return ($Value -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+function Resolve-ExistingPath {
+    param([string]$PathValue, [string]$Description)
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { throw "$Description path was not provided." }
+    if (-not (Test-Path -LiteralPath $PathValue)) {
+        throw "$Description not found at '$PathValue'."
+    }
+    return (Resolve-Path -LiteralPath $PathValue).Path
+}

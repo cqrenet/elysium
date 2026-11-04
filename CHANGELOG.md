@@ -18,8 +18,8 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 - `Update-LithnetStore.ps1` failed on every run right after opening the store: it called `.ToArray()` on its `HashSet[string]` source lists, but `ToArray` is a LINQ extension method that PowerShell cannot see, so PowerShell applied it to each string in the set and threw. The hash list always has at least one entry (configured sources or the default KHDB), so no list was ever imported. The lists are now enumerated through the pipeline.
 
 ### Changed
-- Elysium is becoming a PowerShell module (`src/Elysium`). The manifest's `ModuleVersion` is now the only place the version is defined; the per-file banner versions and `Bump-Version.ps1` are gone. Shared helpers moved from `Elysium.Common.ps1` into `src/Elysium/Private` (`Elysium.Common.ps1` is now a loader for them), and the KHDB updater is the first exported cmdlet, `Update-ElysiumKhdb`; `Update-KHDB.ps1` remains as a thin wrapper, so the menu and existing invocations are unchanged.
-- Added Pester tests (`Invoke-Pester ./tests`): settings parsing, storage URIs, SigV4 signatures checked against botocore-generated values, manifest validation, and an end-to-end incremental KHDB sync against a fake storage container.
+- Elysium is becoming a PowerShell module (`src/Elysium`). The manifest's `ModuleVersion` is now the only place the version is defined; the per-file banner versions and `Bump-Version.ps1` are gone. Shared helpers moved from `Elysium.Common.ps1` into `src/Elysium/Private` (`Elysium.Common.ps1` is now a loader for them), and the scripts are being converted into exported cmdlets: `Update-ElysiumKhdb` and `Update-ElysiumLithnetStore` so far. `Update-KHDB.ps1` and `Update-LithnetStore.ps1` remain as thin wrappers, so the menu and existing invocations are unchanged.
+- Added Pester tests (`Invoke-Pester ./tests`): settings parsing, storage URIs, SigV4 signatures checked against botocore-generated values, manifest validation, an end-to-end incremental KHDB sync against a fake storage container, and the Lithnet import against stubbed Lithnet cmdlets.
 
 ## [2.4.6] — 2026-07-29
 

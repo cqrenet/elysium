@@ -177,3 +177,8 @@ function Remove-EmptyDirectories {
         }
     }
 }
+
+function Get-KhdbPath([hashtable]$settings) {
+    $khdbName = if ([string]::IsNullOrWhiteSpace($settings['WeakPasswordsDatabase'])) { 'khdb.txt' } else { $settings['WeakPasswordsDatabase'] }
+    return (Join-Path -Path (Get-InstallationPath $settings) -ChildPath $khdbName)
+}
