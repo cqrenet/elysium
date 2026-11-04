@@ -263,3 +263,48 @@ Describe 'Password-quality helpers' {
         { Resolve-DSInternalsWeakHashFile -Path $malformed } | Should -Throw '*invalid content at line 1*'
     }
 }
+
+Describe 'KHDB publish -> update round trip' {
+    # Runs the real publisher (tools/Prepare-KHDBStorage.ps1 -SkipUpload) and feeds its package to
+    # Update-ElysiumKhdb, so the manifest/shard format both sides use is checked end to end.
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot '../src/Elysium/Elysium.psd1') -Force
+        $root = Join-Path $TestDrive 'client'
+        $package = Join-Path $TestDrive 'package'
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        & (Get-Module Elysium) { param($r) $script:InstallRoot = $r } $root
+        Set-Content -LiteralPath (Join-Path $root 'ElysiumSettings.txt') -Value @(
+            'storageAccountName=acct', 'containerName=khdb', 'sasToken=sv=2022-11-02&sig=x')
+
+        # 400 distinct hashes spread over many two-hex prefixes, pre-sorted as the publisher expects.
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $expected = [string[]](1..400 | ForEach-Object {
+            [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes("$_"))).Replace('-', '')
+        })
+        [Array]::Sort($expected, [StringComparer]::Ordinal)
+        $source = for ($i = 0; $i -lt $expected.Count; $i++) {
+            switch ($i % 4) {
+                0 { $expected[$i].ToLowerInvariant() }      # lower case
+                1 { "$($expected[$i]):$i" }                # legacy HASH:count
+                2 { $expected[$i]; $expected[$i] }          # adjacent duplicate
+                default { $expected[$i] }
+            }
+        }
+        $sourcePath = Join-Path $TestDrive 'source.txt'
+        Set-Content -LiteralPath $sourcePath -Value (@($source) + 'not-a-hash')
+        & (Join-Path $PSScriptRoot '../tools/Prepare-KHDBStorage.ps1') -SourcePath $sourcePath -OutputRoot $package -SkipUpload 6>$null 3>$null
+
+        # Blob 'khdb/manifest.json' -> <package>/manifest.json, 'khdb/shards/<name>' -> <package>/shards/<name>
+        Mock -ModuleName Elysium Invoke-DownloadWithRetry {
+            $blob = ([uri]$Uri).AbsolutePath -replace '^/khdb/khdb/', ''
+            Copy-Item -LiteralPath (Join-Path $package $blob) -Destination $TargetPath
+        }
+    }
+
+    It 'publishes valid entries only and the client rebuilds exactly the sorted, unique, upper-case set' {
+        (Get-Content -LiteralPath (Join-Path $package 'manifest.json') -Raw | ConvertFrom-Json).shards.Count | Should -BeGreaterThan 100
+        Get-Content -LiteralPath (Join-Path $package 'invalid-hashes.txt') | Should -Contain 'not-a-hash'
+        Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
+        Get-Content -LiteralPath (Join-Path $root 'khdb.txt') | Should -Be $expected
+    }
+}

@@ -325,14 +325,16 @@ function Split-KhdbIntoShards {
     $currentSource = if ($sourceItem.PSIsContainer) { $sourceItem.FullName } else { $sourceItem.Name }
 
     $maxInvalidSamples = 10
-    [System.IO.StreamWriter]$invalidWriter = $null
+    # Held in a hashtable so $ensureInvalidWriter (invoked with &, i.e. in a child scope) can set
+    # it for the whole function; a plain variable assignment there would stay local to that call.
+    $invalidOutput = @{ Writer = $null }
     $ensureInvalidWriter = {
         if (-not $InvalidOutputPath) { return }
-        if (-not $invalidWriter) {
+        if (-not $invalidOutput.Writer) {
             $parent = Split-Path -Parent $InvalidOutputPath
             if ($parent) { Ensure-Directory $parent }
             $appendInvalid = $Resume -and (Test-Path -LiteralPath $InvalidOutputPath)
-            $invalidWriter = New-Object System.IO.StreamWriter($InvalidOutputPath, $appendInvalid, $encoding, 1048576)
+            $invalidOutput.Writer = New-Object System.IO.StreamWriter($InvalidOutputPath, $appendInvalid, $encoding, 1048576)
         }
     }
 
@@ -364,7 +366,7 @@ function Split-KhdbIntoShards {
         param([long]$filePosition)
         if (-not $EnableCheckpoint) { return }
         foreach ($s in $shardStates.Values) { $s.Writer.Flush() }
-        if ($invalidWriter) { $invalidWriter.Flush() }
+        if ($invalidOutput.Writer) { $invalidOutput.Writer.Flush() }
         $payload = [ordered]@{
             version        = 1
             savedAt        = (Get-Date).ToUniversalTime().ToString('o')
@@ -475,7 +477,7 @@ function Split-KhdbIntoShards {
                 [void]$meta.InvalidSamples.Add($trimmed)
             }
             & $ensureInvalidWriter
-            if ($invalidWriter) { $invalidWriter.WriteLine($trimmed) }
+            if ($invalidOutput.Writer) { $invalidOutput.Writer.WriteLine($trimmed) }
             & $invokeProgress $false
             return
         }
@@ -485,7 +487,7 @@ function Split-KhdbIntoShards {
                 [void]$meta.InvalidSamples.Add($trimmed)
             }
             & $ensureInvalidWriter
-            if ($invalidWriter) { $invalidWriter.WriteLine($trimmed) }
+            if ($invalidOutput.Writer) { $invalidOutput.Writer.WriteLine($trimmed) }
             & $invokeProgress $false
             return
         }
@@ -559,7 +561,7 @@ function Split-KhdbIntoShards {
             [void]$meta.InvalidSamples.Add($pathValue)
         }
         & $ensureInvalidWriter
-        if ($invalidWriter) { $invalidWriter.WriteLine($pathValue) }
+        if ($invalidOutput.Writer) { $invalidOutput.Writer.WriteLine($pathValue) }
         & $invokeProgress $true
         return $null
     }
@@ -649,7 +651,7 @@ function Split-KhdbIntoShards {
                                 [void]$meta.InvalidSamples.Add($trimmed)
                             }
                             & $ensureInvalidWriter
-                            if ($invalidWriter) { $invalidWriter.WriteLine($trimmed) }
+                            if ($invalidOutput.Writer) { $invalidOutput.Writer.WriteLine($trimmed) }
                         }
                         & $invokeProgress $false
                     }
@@ -662,7 +664,7 @@ function Split-KhdbIntoShards {
             }
         }
     } finally {
-        if ($invalidWriter) { $invalidWriter.Dispose() }
+        if ($invalidOutput.Writer) { $invalidOutput.Writer.Dispose() }
     }
 
     foreach ($entry in ($shardStates.GetEnumerator() | Sort-Object Key)) {
