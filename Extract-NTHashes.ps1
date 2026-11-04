@@ -19,7 +19,13 @@ This script will connect to selected domain (defined in ElysiumSettings.txt) usi
 
 Thin wrapper around the Send-ElysiumHashExport cmdlet in src/Elysium, kept so existing
 invocations and the menu keep working.
+
+.PARAMETER Domain
+Name of a configured domain (DomainNName in ElysiumSettings.txt). Omit to choose interactively.
 #>
+
+[CmdletBinding()]
+param([string]$Domain)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -29,5 +35,5 @@ Set-StrictMode -Version Latest
 Restart-WithWindowsPowerShellIfAvailable -BoundParameters $PSBoundParameters -UnboundArguments $MyInvocation.UnboundArguments
 
 Import-Module -Name (Join-Path -Path $PSScriptRoot -ChildPath 'src/Elysium/Elysium.psd1') -Force
-Send-ElysiumHashExport
+Send-ElysiumHashExport @PSBoundParameters
 Write-Host "Script execution completed."

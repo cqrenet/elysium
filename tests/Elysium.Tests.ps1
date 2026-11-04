@@ -243,6 +243,20 @@ Describe 'Update-ElysiumLithnetStore' {
 }
 
 Describe 'Password-quality helpers' {
+    It 'selects a domain by name (case-insensitive) or by prompted number, and rejects bad choices' {
+        $domains = Get-DomainDetailsFromSettings -Settings @{
+            Domain1Name = 'contoso.local'; Domain1DC = 'dc1.contoso.local'
+            Domain2Name = 'fabrikam.local'; Domain2DC = ''
+        }
+        (Select-ElysiumDomain -DomainDetails $domains -Name 'CONTOSO.local').DC | Should -Be 'dc1.contoso.local'
+        { Select-ElysiumDomain -DomainDetails $domains -Name 'other.local' } | Should -Throw "*'other.local' is not configured*contoso.local, fabrikam.local*"
+        { Select-ElysiumDomain -DomainDetails $domains -Name 'fabrikam.local' } | Should -Throw '*does not have a configured DC*'
+        Mock Read-Host { '1' }
+        (Select-ElysiumDomain -DomainDetails $domains 6>$null).Name | Should -Be 'contoso.local'
+        Mock Read-Host { '7' }
+        { Select-ElysiumDomain -DomainDetails $domains 6>$null } | Should -Throw '*Invalid selection*'
+    }
+
     It 'lists DomainNName/DomainNDC pairs in order and stops at the first gap' {
         $domains = Get-DomainDetailsFromSettings -Settings @{
             Domain1Name = 'contoso.local'; Domain1DC = 'dc1.contoso.local'

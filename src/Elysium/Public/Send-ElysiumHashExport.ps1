@@ -4,15 +4,25 @@ function Send-ElysiumHashExport {
     Extracts current NT hashes (no usernames) from AD, encrypts them and uploads them to the provider.
 
     .DESCRIPTION
-    Prompts for a domain from ElysiumSettings.txt and for credentials with replication rights,
+    Uses the domain from ElysiumSettings.txt named by -Domain (or prompts for one) and the credentials in
+    -Credential (or prompts for credentials with replication rights),
     replicates accounts with Get-ADReplAccount, and writes the unique NT hashes of accounts that have
     one to a temp directory readable only by the current user. The list is zipped, encrypted with the
     stored passphrase (format ELY2) and uploaded in one PUT to the configured Azure Blob or S3-compatible
     storage, which verifies the body against the digest sent with it. Plaintext and archive are always
     deleted; the encrypted file is kept in the temp directory only if the upload fails.
+
+    .PARAMETER Domain
+    Name of a configured domain (DomainNName in ElysiumSettings.txt). Omit to choose interactively.
+
+    .PARAMETER Credential
+    Account with the replication rights. Omit to be prompted.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Domain,
+        [System.Management.Automation.PSCredential]$Credential
+    )
 
     Start-ElysiumTranscript -BasePath $InstallRoot -Name 'extract-hashes'
     try {
@@ -39,15 +49,7 @@ function Send-ElysiumHashExport {
 
         $DomainDetails = Get-DomainDetailsFromSettings -Settings $ElysiumSettings
 
-        # User selects a domain
-        Write-Host "Select a domain to extract NTLM hashes:"
-        $DomainDetails.GetEnumerator() | Sort-Object { [int]$_.Key } | ForEach-Object { Write-Host "$($_.Key): $($_.Value.Name)" }
-        $selection = Read-Host "Enter the number of the domain"
-        $selectedDomain = $DomainDetails[$selection]
-
-        if (-not $selectedDomain) {
-            throw "Invalid selection."
-        }
+        $selectedDomain = Select-ElysiumDomain -DomainDetails $DomainDetails -Name $Domain -Purpose 'extract NTLM hashes'
 
         $domainController = $selectedDomain.DC
 
@@ -58,7 +60,7 @@ function Send-ElysiumHashExport {
         }
 
         if ($hasADModule) {
-            $credential = Get-ValidatedADCredential -DomainName $selectedDomain.Name -Server $domainController
+            if (-not $Credential) { $Credential = Get-ValidatedADCredential -DomainName $selectedDomain.Name -Server $domainController }
             try {
                 $domainInfo = Get-ADDomain -Server $domainController -Credential $credential -ErrorAction Stop
                 Test-ReplicationPermissions -DomainDN $domainInfo.DistinguishedName `
@@ -68,8 +70,10 @@ function Send-ElysiumHashExport {
             }
         } else {
             Write-Warning "ActiveDirectory module not available; skipping credential pre-check and replication permission verification."
-            $credential = Get-Credential -Message "Enter AD credentials with replication rights for $($selectedDomain.Name)"
-            if ($null -eq $credential) { throw "Credential prompt was cancelled." }
+            if (-not $Credential) {
+                $Credential = Get-Credential -Message "Enter AD credentials with replication rights for $($selectedDomain.Name)"
+                if ($null -eq $Credential) { throw "Credential prompt was cancelled." }
+            }
         }
 
         $domainPrefix = ($selectedDomain.Name -replace "\W", "_")

@@ -100,3 +100,29 @@ function Normalize-ReportPath([string]$p) {
     if ([System.IO.Path]::IsPathRooted($p)) { return $p }
     return (Join-Path -Path $InstallRoot -ChildPath $p)
 }
+
+function Select-ElysiumDomain {
+    # Picks a configured domain by name (non-interactive) or, without -Name, by prompting for its number.
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$DomainDetails,
+        [string]$Name,
+        [string]$Purpose = 'test'
+    )
+
+    if ($Name) {
+        $selected = @($DomainDetails.Values | Where-Object { $_.Name -ieq $Name }) | Select-Object -First 1
+        if (-not $selected) {
+            throw ("Domain '{0}' is not configured. Configured domains: {1}." -f $Name, (@($DomainDetails.Values | ForEach-Object { $_.Name }) -join ', '))
+        }
+    } else {
+        Write-Host "Select a domain to ${Purpose}:"
+        $DomainDetails.GetEnumerator() | Sort-Object { [int]$_.Key } | ForEach-Object { Write-Host "$($_.Key): $($_.Value.Name)" }
+        $selection = Read-Host "Enter the number of the domain"
+        if (-not $DomainDetails.Contains($selection)) { throw 'Invalid selection.' }
+        $selected = $DomainDetails[$selection]
+    }
+    if ([string]::IsNullOrWhiteSpace($selected.DC)) {
+        throw ("Domain '{0}' does not have a configured DC in ElysiumSettings.txt." -f $selected.Name)
+    }
+    return $selected
+}

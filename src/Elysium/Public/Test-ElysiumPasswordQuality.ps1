@@ -4,14 +4,24 @@ function Test-ElysiumPasswordQuality {
     Tests AD account passwords against the KHDB with DSInternals and writes a weak-password report.
 
     .DESCRIPTION
-    Prompts for a domain from ElysiumSettings.txt and for credentials with replication rights, pre-checks
+    Uses the domain from ElysiumSettings.txt named by -Domain (or prompts for one) and the credentials in
+    -Credential (or prompts for credentials with replication rights), pre-checks
     the credentials, DC clock skew and replication permissions, replicates accounts with Get-ADReplAccount
     and runs Test-PasswordQuality against the KHDB. Writes a text report and a UPN-only list of dictionary
     hits under ReportPathBase. Windows only; under PowerShell 7 the ActiveDirectory and DSInternals
     modules are loaded through Windows PowerShell compatibility.
+
+    .PARAMETER Domain
+    Name of a configured domain (DomainNName in ElysiumSettings.txt). Omit to choose interactively.
+
+    .PARAMETER Credential
+    Account with the replication rights. Omit to be prompted (the prompt validates against the DC).
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Domain,
+        [System.Management.Automation.PSCredential]$Credential
+    )
 
     # Current timestamp for both report generation and header
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -157,7 +167,7 @@ Remediation:
 
         # Main script logic
         Write-Verbose "Starting main script execution..."
-        Invoke-WeakPasswordTest -DomainDetails $domainDetails -FilePath $WeakHashesSortedFilePath -CheckOnlyEnabledUsers:$checkOnlyEnabledUsers
+        Invoke-WeakPasswordTest -DomainDetails $domainDetails -FilePath $WeakHashesSortedFilePath -CheckOnlyEnabledUsers:$checkOnlyEnabledUsers -DomainName $Domain -Credential $Credential
     } catch {
         Write-Error ("An error occurred during script execution: {0}" -f $_.Exception.Message)
     } finally {

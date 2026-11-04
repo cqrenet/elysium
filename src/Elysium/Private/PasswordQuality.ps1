@@ -350,26 +350,12 @@ function Invoke-WeakPasswordTest {
         [hashtable]$DomainDetails,
         [string]$FilePath,
         [bool]$CheckOnlyEnabledUsers = $false,
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+        [string]$DomainName
     )
 
-    # User selects a domain
-    Write-Host "Select a domain to test:"
-    $DomainDetails.GetEnumerator() | Sort-Object { [int]$_.Key } | ForEach-Object { Write-Host "$($_.Key): $($_.Value.Name)" }
-    $selection = Read-Host "Enter the number of the domain"
-    
-    if (-not ($DomainDetails.ContainsKey($selection))) {
-        Write-Error "Invalid selection."
-        return
-    }
-    
-    $selectedDomain = $DomainDetails[$selection]
+    $selectedDomain = Select-ElysiumDomain -DomainDetails $DomainDetails -Name $DomainName -Purpose 'test'
     Write-Verbose "Selected domain: $($selectedDomain.Name)"
-
-    if ([string]::IsNullOrWhiteSpace($selectedDomain["DC"])) {
-        Write-Error ("Domain '{0}' does not have a configured DC in ElysiumSettings.txt." -f $selectedDomain.Name)
-        return
-    }
 
     if ($null -eq $Credential) {
         $credential = Get-ValidatedADCredential -DomainName $selectedDomain.Name -Server $selectedDomain["DC"]

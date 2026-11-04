@@ -20,7 +20,13 @@ This script will test the passwords of selected domain (defined in ElysiumSettin
 
 Thin wrapper around the Test-ElysiumPasswordQuality cmdlet in src/Elysium, kept so existing
 invocations and the menu keep working.
+
+.PARAMETER Domain
+Name of a configured domain (DomainNName in ElysiumSettings.txt). Omit to choose interactively.
 #>
+
+[CmdletBinding()]
+param([string]$Domain)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -30,5 +36,5 @@ Set-StrictMode -Version Latest
 Restart-WithWindowsPowerShellIfAvailable -BoundParameters $PSBoundParameters -UnboundArguments $MyInvocation.UnboundArguments
 
 Import-Module -Name (Join-Path -Path $PSScriptRoot -ChildPath 'src/Elysium/Elysium.psd1') -Force
-Test-ElysiumPasswordQuality
+Test-ElysiumPasswordQuality @PSBoundParameters
 Write-Host "Script execution completed."
