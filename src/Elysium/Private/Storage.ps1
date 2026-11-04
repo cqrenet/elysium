@@ -1,15 +1,5 @@
 # ---------------------------------------------------------------------------
-# Parallel execution helpers
-# ---------------------------------------------------------------------------
-
-function Get-FunctionDefinitionText {
-    param([Parameter(Mandatory)][string]$Name)
-    $cmd = Get-Command -Name $Name -CommandType Function -ErrorAction Stop
-    return $cmd.ScriptBlock.Ast.Extent.Text
-}
-
-# ---------------------------------------------------------------------------
-# Azure Blob Storage helpers
+# Azure Blob Storage URIs and storage paths
 # ---------------------------------------------------------------------------
 
 function Build-BlobUri {
@@ -32,10 +22,6 @@ function Build-BlobUri {
     $builder.Query = $sas.TrimStart('?')
     return $builder.Uri.AbsoluteUri
 }
-
-# ---------------------------------------------------------------------------
-# Storage path utilities
-# ---------------------------------------------------------------------------
 
 function Combine-StoragePath {
     param(
@@ -145,247 +131,193 @@ function BuildS3Uri([string]$endpointUrl, [string]$bucket, [string]$key, [bool]$
     return $builder.Uri
 }
 
-function Ensure-AWSS3Module {
-    try { $null = [Amazon.S3.AmazonS3Client]; return } catch {}
-    try { Import-Module -Name AWS.Tools.S3 -ErrorAction Stop; return } catch {}
-    try { Import-Module -Name AWSPowerShell.NetCore -ErrorAction Stop; return } catch {}
-    throw "AWS Tools for PowerShell not found. Install with: Install-Module AWS.Tools.S3 -Scope CurrentUser"
+# ---------------------------------------------------------------------------
+# Storage access: one HTTP path for Azure Blob (SAS URI) and S3-compatible (SigV4)
+# ---------------------------------------------------------------------------
+
+function Get-StorageConfig {
+    param([Parameter(Mandatory)][hashtable]$Settings)
+
+    if ($Settings['StorageProvider'] -ieq 'S3') {
+        $config = @{
+            Provider        = 'S3'
+            EndpointUrl     = $Settings['s3EndpointUrl']
+            Region          = if ([string]::IsNullOrWhiteSpace($Settings['s3Region'])) { 'us-east-1' } else { $Settings['s3Region'] }
+            Bucket          = $Settings['s3BucketName']
+            AccessKeyId     = $Settings['s3AccessKeyId']
+            SecretAccessKey = $Settings['s3SecretAccessKey']
+            ForcePathStyle  = Get-BooleanSetting -Value $Settings['s3ForcePathStyle'] -Default $true
+        }
+        if ([string]::IsNullOrWhiteSpace($config.Bucket)) { throw 's3BucketName is missing or empty.' }
+        if ([string]::IsNullOrWhiteSpace($config.AccessKeyId) -or [string]::IsNullOrWhiteSpace($config.SecretAccessKey)) { throw 's3AccessKeyId / s3SecretAccessKey missing or empty.' }
+        if ([string]::IsNullOrWhiteSpace($config.EndpointUrl)) { throw 's3EndpointUrl is required for S3-compatible storage.' }
+        return $config
+    }
+
+    $config = @{ Provider = 'Azure'; Account = $Settings['storageAccountName']; Container = $Settings['containerName']; Sas = $Settings['sasToken'] }
+    if ([string]::IsNullOrWhiteSpace($config.Account)) { throw 'storageAccountName is missing or empty.' }
+    if ([string]::IsNullOrWhiteSpace($config.Container)) { throw 'containerName is missing or empty.' }
+    if ([string]::IsNullOrWhiteSpace($config.Sas)) { throw 'sasToken is missing or empty.' }
+    return $config
 }
 
-function New-S3Client {
+function New-StorageRequest {
+    # A PUT body carries a digest the storage service checks before storing anything: Content-MD5 for
+    # Azure, the SigV4-signed SHA-256 payload hash for S3. A corrupted upload is rejected, never stored.
     param(
-        [string]$EndpointUrl,
-        [string]$Region,
-        [string]$AccessKeyId,
-        [string]$SecretAccessKey,
-        [bool]$ForcePathStyle = $true
+        [Parameter(Mandatory)][hashtable]$Storage,
+        [Parameter(Mandatory)][ValidateSet('GET', 'PUT')][string]$Method,
+        [Parameter(Mandatory)][string]$Key,
+        [byte[]]$Body
     )
-    Ensure-AWSS3Module
-    $creds = New-Object Amazon.Runtime.BasicAWSCredentials($AccessKeyId, $SecretAccessKey)
-    $cfg = New-Object Amazon.S3.AmazonS3Config
-    if ($EndpointUrl) { $cfg.ServiceURL = $EndpointUrl }
-    if ($Region) { try { $cfg.RegionEndpoint = [Amazon.RegionEndpoint]::GetBySystemName($Region) } catch {} }
-    $cfg.ForcePathStyle = [bool]$ForcePathStyle
-    return (New-Object Amazon.S3.AmazonS3Client($creds, $cfg))
+
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $httpMethod = [System.Net.Http.HttpMethod]::new($Method)
+    if ($Storage.Provider -eq 'S3') {
+        $uri = BuildS3Uri -endpointUrl $Storage.EndpointUrl -bucket $Storage.Bucket -key $Key -forcePathStyle $Storage.ForcePathStyle
+        $request = [System.Net.Http.HttpRequestMessage]::new($httpMethod, $uri)
+        $headers = BuildAuthHeaders -method $Method -uri $uri -region $Storage.Region -accessKey $Storage.AccessKeyId -secretKey $Storage.SecretAccessKey -payloadHash (Get-HashHex $Body)
+        foreach ($kvp in $headers.GetEnumerator()) { [void]$request.Headers.TryAddWithoutValidation($kvp.Key, $kvp.Value) }
+        if ($Method -eq 'PUT') { $request.Content = [System.Net.Http.ByteArrayContent]::new($Body) }
+        return $request
+    }
+
+    $uri = Build-BlobUri -Account $Storage.Account -Container $Storage.Container -Sas $Storage.Sas -BlobName $Key
+    $request = [System.Net.Http.HttpRequestMessage]::new($httpMethod, $uri)
+    if ($Method -eq 'PUT') {
+        [void]$request.Headers.TryAddWithoutValidation('x-ms-blob-type', 'BlockBlob')
+        [void]$request.Headers.TryAddWithoutValidation('x-ms-version', '2020-10-02')
+        $request.Content = [System.Net.Http.ByteArrayContent]::new($Body)
+        # ponytail: MD5 throws on FIPS-enforced Windows; Test-ElysiumPasswordQuality already refuses those
+        # hosts. If FIPS hosts must upload to Azure, switch to the x-ms-content-crc64 header.
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        try { $request.Content.Headers.ContentMD5 = $md5.ComputeHash($Body) } finally { $md5.Dispose() }
+    }
+    return $request
 }
 
-# ---------------------------------------------------------------------------
-# HTTP download helpers (Azure SAS URI and native SigV4 S3), with retry
-# ---------------------------------------------------------------------------
-
-function New-HttpClient {
+function New-StorageHttpClient {
     Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds(600)
-    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Elysium/$ElysiumVersion (+Update-KHDB)")
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Elysium/$ElysiumVersion")
     return $client
 }
 
-function Invoke-DownloadWithRetry {
+function Invoke-StorageDownload {
+    # Streams one object to $TargetPath. Network errors and HTTP 408/429/5xx are retried (5 attempts,
+    # 2-30 s backoff); any other HTTP status fails at once.
     param(
-        [System.Net.Http.HttpClient]$Client,
-        [string]$Uri,
-        [string]$TargetPath,
-        [string]$Activity
+        [Parameter(Mandatory)][hashtable]$Storage,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$TargetPath
     )
 
-    $retries = 5
-    $delay = 2
-    for ($attempt = 0; $attempt -lt $retries; $attempt++) {
-        $response = $null
-        try {
-            $response = $Client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
-            if (-not $response.IsSuccessStatusCode) {
-                $code = [int]$response.StatusCode
-                if (($code -ge 500 -and $code -lt 600) -or $code -eq 429 -or $code -eq 408) { throw "Transient HTTP error $code" }
-                throw "HTTP error $code"
-            }
-
-            $totalBytes = $response.Content.Headers.ContentLength
-            $stream = $response.Content.ReadAsStreamAsync().Result
-            $fs = [System.IO.File]::Create($TargetPath)
-            try {
-                $buffer = New-Object byte[] 8192
-                $totalRead = 0
-                while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    $fs.Write($buffer, 0, $read)
-                    $totalRead += $read
-                    if ($totalBytes) {
-                        $pct = ($totalRead * 100.0) / $totalBytes
-                        Write-Progress -Activity $Activity -Status ("{0:N2}% Complete" -f $pct) -PercentComplete $pct
-                    } else {
-                        Write-Progress -Activity $Activity -Status ("Downloaded {0:N0} bytes" -f $totalRead) -PercentComplete 0
-                    }
-                }
-            } finally {
-                $fs.Close()
-                $stream.Close()
-            }
-
-            Write-Progress -Activity $Activity -Completed -Status 'Completed'
-            return
-        } catch {
-            if ($attempt -lt ($retries - 1)) {
-                Write-Warning "Download of '$Uri' failed (attempt $($attempt + 1)/$retries): $($_.Exception.Message). Retrying in ${delay}s..."
-                Start-Sleep -Seconds $delay
-                $delay = [Math]::Min($delay * 2, 30)
-            } else {
-                throw
-            }
-        } finally {
-            if ($response) { $response.Dispose() }
-        }
-    }
-}
-
-function Invoke-S3HttpDownloadWithRetry {
-    param(
-        [string]$EndpointUrl,
-        [string]$Bucket,
-        [string]$Key,
-        [string]$TargetPath,
-        [string]$Region,
-        [string]$AccessKeyId,
-        [string]$SecretAccessKey,
-        [bool]$ForcePathStyle,
-        [string]$Activity
-    )
-
-    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
-    [System.Net.Http.HttpClient]$client = [System.Net.Http.HttpClient]::new()
-    $retries = 5
-    $delay = 2
+    $client = New-StorageHttpClient
     try {
-        for ($attempt = 0; $attempt -lt $retries; $attempt++) {
-            $request = $null
+        $delay = 2
+        for ($attempt = 1; ; $attempt++) {
+            $request = New-StorageRequest -Storage $Storage -Method GET -Key $Key
+            $response = $null
+            $permanent = $false
             try {
-                $uri = BuildS3Uri -endpointUrl $EndpointUrl -bucket $Bucket -key $Key -forcePathStyle $ForcePathStyle
-                $payloadHash = (Get-HashHex (Get-Bytes ''))
-                $headers = BuildAuthHeaders -method 'GET' -uri $uri -region $Region -accessKey $AccessKeyId -secretKey $SecretAccessKey -payloadHash $payloadHash
-                $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
-                foreach ($kvp in $headers.GetEnumerator()) {
-                    $request.Headers.TryAddWithoutValidation($kvp.Key, $kvp.Value) | Out-Null
-                }
-
                 $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-                $null = $response.EnsureSuccessStatusCode()
-
-                $totalBytes = $response.Content.Headers.ContentLength
-                $stream = $response.Content.ReadAsStreamAsync().Result
-                $fs = [System.IO.File]::Create($TargetPath)
-                try {
-                    $buffer = New-Object byte[] 8192
-                    $totalRead = 0
-                    while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                        $fs.Write($buffer, 0, $read)
-                        $totalRead += $read
-                        if ($totalBytes) {
-                            $pct = ($totalRead * 100.0) / $totalBytes
-                            Write-Progress -Activity $Activity -Status ("{0:N2}% Complete" -f $pct) -PercentComplete $pct
-                        } else {
-                            Write-Progress -Activity $Activity -Status ("Downloaded {0:N0} bytes" -f $totalRead) -PercentComplete 0
-                        }
-                    }
-                } finally {
-                    $fs.Close()
-                    $stream.Close()
+                $code = [int]$response.StatusCode
+                if (-not $response.IsSuccessStatusCode) {
+                    $permanent = $code -lt 500 -and $code -ne 408 -and $code -ne 429
+                    throw "HTTP $code $($response.ReasonPhrase)"
                 }
-
-                if ($response) { $response.Dispose() }
-                Write-Progress -Activity $Activity -Completed -Status 'Completed'
+                $source = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+                $target = [System.IO.File]::Create($TargetPath)
+                try { $source.CopyTo($target, 1048576) } finally { $target.Dispose(); $source.Dispose() }
                 return
             } catch {
-                if ($attempt -lt ($retries - 1)) {
-                    Write-Warning "Download of '$Key' failed (attempt $($attempt + 1)/$retries): $($_.Exception.Message). Retrying in ${delay}s..."
-                    Start-Sleep -Seconds $delay
-                    $delay = [Math]::Min($delay * 2, 30)
-                } else {
-                    throw
-                }
+                if ($permanent -or $attempt -ge 5) { throw "Download of '$Key' failed: $($_.Exception.Message)" }
+                Write-Warning ("Download of '{0}' failed (attempt {1}/5): {2}. Retrying in {3}s..." -f $Key, $attempt, $_.Exception.Message, $delay)
             } finally {
-                if ($request) { $request.Dispose() }
+                if ($response) { $response.Dispose() }
+                $request.Dispose()
             }
+            Start-Sleep -Seconds $delay
+            $delay = [Math]::Min($delay * 2, 30)
         }
     } finally {
         $client.Dispose()
     }
 }
 
-# ---------------------------------------------------------------------------
-# Upload / verify helpers for the hash export (native SigV4 S3, file checksums)
-# ---------------------------------------------------------------------------
-
-function Get-FileSha256Hex([string]$path) {
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    $fs = [System.IO.File]::OpenRead($path)
-    try { return ([BitConverter]::ToString($sha.ComputeHash($fs))).Replace('-', '').ToLowerInvariant() } finally { $fs.Close(); $sha.Dispose() }
-}
-
-function Invoke-S3PutFile([string]$endpointUrl, [string]$bucket, [string]$key, [string]$filePath, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
-    $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
-    $payloadHash = Get-FileSha256Hex -path $filePath
-    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
-    $client = [System.Net.Http.HttpClient]::new()
-    try {
-        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, $uri)
-        $stream = [System.IO.File]::OpenRead($filePath)
-        $req.Content = [System.Net.Http.StreamContent]::new($stream)
-        $hdrs = BuildAuthHeaders -method 'PUT' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
-        $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
-        $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
-        $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
-        $resp = $client.SendAsync($req).Result
-        if (-not $resp.IsSuccessStatusCode) { throw "S3 PUT failed: $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
-    } finally { if ($req) { $req.Dispose() }; if ($stream) { $stream.Close(); $stream.Dispose() }; $client.Dispose() }
-}
-
-function Invoke-S3GetToFile([string]$endpointUrl, [string]$bucket, [string]$key, [string]$targetPath, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
-    $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
-    $payloadHash = (Get-HashHex (Get-Bytes ''))
-    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
-    $client = [System.Net.Http.HttpClient]::new()
-    try {
-        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
-        $hdrs = BuildAuthHeaders -method 'GET' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
-        $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
-        $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
-        $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
-        $resp = $client.SendAsync($req).Result
-        if (-not $resp.IsSuccessStatusCode) { throw "S3 GET failed: $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
-        $bytes = $resp.Content.ReadAsByteArrayAsync().Result
-        [System.IO.File]::WriteAllBytes($targetPath, $bytes)
-    } finally { if ($req) { $req.Dispose() }; $client.Dispose() }
-}
-
-function Invoke-S3DeleteFile([string]$endpointUrl, [string]$bucket, [string]$key, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
-    $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
-    $payloadHash = (Get-HashHex (Get-Bytes ''))
-    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
-    $client = [System.Net.Http.HttpClient]::new()
-    try {
-        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Delete, $uri)
-        $hdrs = BuildAuthHeaders -method 'DELETE' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
-        $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
-        $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
-        $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
-        $resp = $client.SendAsync($req).Result
-        # S3 DELETE is idempotent and returns 204 even if the key never existed; anything else is a real failure.
-        if (-not $resp.IsSuccessStatusCode) { throw "S3 DELETE failed: $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
-    } finally { if ($req) { $req.Dispose() }; $client.Dispose() }
-}
-
-function Get-FileChecksum {
-    param (
-        [string]$Path,
-        [string]$Algorithm = "SHA256"
+function Invoke-StorageUpload {
+    # One PUT; the service verifies the body against the digest New-StorageRequest attaches, so the
+    # caller needs write access only - nothing is read back.
+    param(
+        [Parameter(Mandatory)][hashtable]$Storage,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$Path
     )
-    $hasher = [System.Security.Cryptography.HashAlgorithm]::Create($Algorithm)
-    $stream = [System.IO.File]::OpenRead($Path)
+
+    $client = New-StorageHttpClient
+    $request = New-StorageRequest -Storage $Storage -Method PUT -Key $Key -Body ([System.IO.File]::ReadAllBytes($Path))
     try {
-        $hashBytes = $hasher.ComputeHash($stream)
-        return [BitConverter]::ToString($hashBytes) -replace '-', ''
+        $response = $client.SendAsync($request).GetAwaiter().GetResult()
+        try {
+            if (-not $response.IsSuccessStatusCode) {
+                $detail = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
+                throw ("Upload of '{0}' failed: HTTP {1} {2}. {3}" -f $Key, [int]$response.StatusCode, $response.ReasonPhrase, $detail)
+            }
+        } finally {
+            $response.Dispose()
+        }
     } finally {
-        $stream.Close()
-        $hasher.Dispose()
+        $request.Dispose()
+        $client.Dispose()
+    }
+}
+
+function Invoke-InModuleRunspace {
+    # Calls the module function $FunctionName once per parameter set, at most $ThrottleLimit at a time,
+    # each in a pooled runspace that imports this module normally. Same behavior on Windows PowerShell
+    # 5.1 and PowerShell 7. Waits for every call, then throws if any failed.
+    param(
+        [Parameter(Mandatory)][string]$FunctionName,
+        [Parameter(Mandatory)][hashtable[]]$ParameterSets,
+        [ValidateRange(1, 64)][int]$ThrottleLimit = 5,
+        [string]$Activity = 'Working'
+    )
+
+    $sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $sessionState.ImportPSModule([string[]]@($ModuleManifestPath))
+    $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, $ThrottleLimit, $sessionState, $Host)
+    $pool.Open()
+    $jobs = @()
+    try {
+        foreach ($parameters in $ParameterSets) {
+            $shell = [System.Management.Automation.PowerShell]::Create()
+            $shell.RunspacePool = $pool
+            [void]$shell.AddScript('param($f, $p) & (Get-Module Elysium) { param($f, $p) & $f @p } $f $p').AddArgument($FunctionName).AddArgument($parameters)
+            $jobs += [pscustomobject]@{ Shell = $shell; Handle = $shell.BeginInvoke() }
+        }
+        while ($true) {
+            $done = @($jobs | Where-Object { $_.Handle.IsCompleted }).Count
+            Write-Progress -Activity $Activity -Status ("{0}/{1}" -f $done, $jobs.Count) -PercentComplete ([int](100 * $done / [Math]::Max(1, $jobs.Count)))
+            if ($done -eq $jobs.Count) { break }
+            Start-Sleep -Milliseconds 200
+        }
+        Write-Progress -Activity $Activity -Completed
+        $failures = foreach ($job in $jobs) {
+            try {
+                [void]$job.Shell.EndInvoke($job.Handle)
+            } catch {
+                $e = $_.Exception
+                if ($e -is [System.Management.Automation.MethodInvocationException] -and $e.InnerException) { $e = $e.InnerException }
+                $e.Message
+            }
+        }
+    } finally {
+        foreach ($job in $jobs) { $job.Shell.Dispose() }
+        $pool.Dispose()
+    }
+    if ($failures) {
+        throw ("{0} of {1} {2} call(s) failed. First: {3}" -f @($failures).Count, $jobs.Count, $FunctionName, @($failures)[0])
     }
 }

@@ -33,7 +33,6 @@ s3SecretAccessKey =
 # Many S3-compatible providers require path-style addressing
 # (true recommended for MinIO/IDrive e2/Wasabi). Set to true/false.
 s3ForcePathStyle = true
-s3UseAwsTools = false
 
 # KHDB Shard Settings
 #####################
@@ -71,8 +70,9 @@ UsageBeaconTimeoutSeconds=5
 
 # Notes:
 # - Required PowerShell modules: DSInternals, ActiveDirectory
-#   For Azure uploads: Az.Storage
-#   For S3-compatible uploads: AWS.Tools.S3 or AWSPowerShell.NetCore
+#   (Azure and S3 transfers use built-in .NET HttpClient; no Az/AWS modules needed.)
+# - Storage credentials: the KHDB download needs read access to the KHDB paths only; the hash
+#   export needs write access only (uploads are checksum-verified by the storage service).
 # - AD account permissions: Replication Directory Changes and Replication Directory Changes All
 #   on the domain (DCSync-equivalent) are sufficient; full Domain Admin not required.
 

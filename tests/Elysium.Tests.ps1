@@ -5,6 +5,12 @@ BeforeAll {
     foreach ($file in Get-ChildItem -Path (Join-Path $PSScriptRoot '../src/Elysium/Private') -Filter '*.ps1') {
         . $file.FullName
     }
+    . (Join-Path $PSScriptRoot 'FakeStorage.ps1')
+    $ElysiumVersion = 'test'   # module-level in production; the dot-sourced helpers read it
+
+    function New-S3Settings([string]$EndpointUrl) {
+        @{ StorageProvider = 'S3'; s3EndpointUrl = $EndpointUrl; s3BucketName = 'bucket'; s3AccessKeyId = 'AKIDEXAMPLE'; s3SecretAccessKey = 'secret' }
+    }
 }
 
 Describe 'Settings parsing' {
@@ -101,53 +107,48 @@ Describe 'KHDB manifest and merge' {
     }
 }
 
-Describe 'Update-ElysiumKhdb (incremental sync against a fake Azure container)' {
+Describe 'Update-ElysiumKhdb (incremental sync against a fake S3 store)' {
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '../src/Elysium/Elysium.psd1') -Force
         $root = Join-Path $TestDrive 'install'
         $remote = Join-Path $TestDrive 'remote'
-        New-Item -ItemType Directory -Path $root, (Join-Path $remote 'khdb/shards') -Force | Out-Null
+        New-Item -ItemType Directory -Path $root, (Join-Path $remote 'bucket/khdb/shards') -Force | Out-Null
         & (Get-Module Elysium) { param($r) $script:InstallRoot = $r } $root
-        Set-Content -LiteralPath (Join-Path $root 'ElysiumSettings.txt') -Value @(
-            'storageAccountName=acct', 'containerName=khdb', 'sasToken=sv=2022-11-02&sig=x')
-
-        # Serves blob URIs from $remote: https://acct.blob.core.windows.net/khdb/<blob>?sas -> $remote/<blob>.
-        # Pester runs the mock body in this scope, so $remote and the mocked call's $Uri/$TargetPath
-        # are both visible (a .GetNewClosure() here would hide them).
-        Mock -ModuleName Elysium Invoke-DownloadWithRetry {
-            $blob = ([uri]$Uri).AbsolutePath -replace '^/khdb/', ''
-            Copy-Item -LiteralPath (Join-Path $remote $blob) -Destination $TargetPath
-        }
+        $server = Start-FakeStorage -Root $remote
+        Set-Content -LiteralPath (Join-Path $root 'ElysiumSettings.txt') -Value ((New-S3Settings $server.Url).GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })
 
         function Publish-Shards([hashtable]$Shards) {
             $entries = foreach ($name in $Shards.Keys | Sort-Object) {
-                $path = Join-Path $remote "khdb/shards/$name"
+                $path = Join-Path $remote "bucket/khdb/shards/$name"
                 Set-Content -LiteralPath $path -Value $Shards[$name]
                 [ordered]@{ name = $name; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); size = (Get-Item -LiteralPath $path).Length }
             }
-            # Same top-level fields Prepare-KHDBStorage.ps1 always writes; the updater runs under
+            # Same top-level fields tools/Prepare-KHDBStorage.ps1 always writes; the updater runs under
             # StrictMode, so version/shardSize/shardPrefix are effectively required.
             @{ version = '1'; shardSize = 2; shardPrefix = 'khdb/shards'; shards = @($entries) } |
-                ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $remote 'khdb/manifest.json')
+                ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $remote 'bucket/khdb/manifest.json')
         }
+        function Get-Downloads { @(Get-FakeStorageLog $server | Where-Object { $_ -like 'GET *' }) }
         $khdb = Join-Path $root 'khdb.txt'
     }
 
-    It 'downloads everything on first run, normalizing case and HASH:count and merging in order' {
+    AfterAll { Stop-FakeStorage $server }
+
+    It 'downloads everything on first run (4 runspaces), normalizing case and HASH:count and merging in order' {
         Publish-Shards @{
             '00.txt' = @('00112233445566778899AABBCCDDEEFF', '00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
             'ab.txt' = @('ab112233445566778899aabbccddeeff:12', 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
         }
-        Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
+        Update-ElysiumKhdb -MaxParallelTransfers 4 6>$null
         Get-Content -LiteralPath $khdb | Should -Be @(
             '00112233445566778899AABBCCDDEEFF', '00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',
             'AB112233445566778899AABBCCDDEEFF', 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
-        Should -Invoke Invoke-DownloadWithRetry -ModuleName Elysium -Times 3 -Exactly   # manifest + 2 shards
+        (Get-Downloads).Count | Should -Be 3   # manifest + 2 shards
     }
 
     It 'downloads only the manifest when nothing changed' {
         Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
-        Should -Invoke Invoke-DownloadWithRetry -ModuleName Elysium -Times 1 -Exactly
+        Get-Downloads | Should -Be @('GET bucket/khdb/manifest.json')
     }
 
     It 'downloads only the changed shard and removes shards the manifest no longer lists' {
@@ -157,11 +158,19 @@ Describe 'Update-ElysiumKhdb (incremental sync against a fake Azure container)' 
             '00.txt' = @('00112233445566778899AABBCCDDEEFF', '00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
             'ab.txt' = @('ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
         }
-        Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
-        Should -Invoke Invoke-DownloadWithRetry -ModuleName Elysium -Times 2 -Exactly   # manifest + ab.txt
+        Update-ElysiumKhdb -MaxParallelTransfers 2 6>$null
+        Get-Downloads | Should -Be @('GET bucket/khdb/manifest.json', 'GET bucket/khdb/shards/ab.txt')
         Test-Path -LiteralPath $stale | Should -BeFalse
         Get-Content -LiteralPath $khdb | Should -Be @(
             '00112233445566778899AABBCCDDEEFF', '00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
+    }
+
+    It 'fails the run and keeps the previous KHDB when a shard does not match its checksum' {
+        $before = Get-Content -LiteralPath $khdb
+        Publish-Shards @{ '00.txt' = @('00112233445566778899AABBCCDDEEFF'); 'ab.txt' = @('ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF') }
+        Add-Content -LiteralPath (Join-Path $remote 'bucket/khdb/shards/00.txt') -Value 'tampered'
+        { Update-ElysiumKhdb -MaxParallelTransfers 2 6>$null } | Should -Throw '*00.txt*mismatch*'
+        Get-Content -LiteralPath $khdb | Should -Be $before
     }
 }
 
@@ -265,16 +274,15 @@ Describe 'Password-quality helpers' {
 }
 
 Describe 'KHDB publish -> update round trip' {
-    # Runs the real publisher (tools/Prepare-KHDBStorage.ps1) and feeds its package to
-    # Update-ElysiumKhdb, so the manifest/shard format both sides use is checked end to end.
+    # Runs the real publisher (tools/Prepare-KHDBStorage.ps1), "uploads" its package to the fake store
+    # the way the README's CLI commands do, and lets Update-ElysiumKhdb rebuild the KHDB from it.
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '../src/Elysium/Elysium.psd1') -Force
         $root = Join-Path $TestDrive 'client'
         $package = Join-Path $TestDrive 'package'
-        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $remote = Join-Path $TestDrive 'remote'
+        New-Item -ItemType Directory -Path $root, (Join-Path $remote 'bucket/khdb') -Force | Out-Null
         & (Get-Module Elysium) { param($r) $script:InstallRoot = $r } $root
-        Set-Content -LiteralPath (Join-Path $root 'ElysiumSettings.txt') -Value @(
-            'storageAccountName=acct', 'containerName=khdb', 'sasToken=sv=2022-11-02&sig=x')
 
         # 400 distinct hashes spread over many two-hex prefixes, pre-sorted as the publisher expects.
         $md5 = [System.Security.Cryptography.MD5]::Create()
@@ -294,17 +302,71 @@ Describe 'KHDB publish -> update round trip' {
         Set-Content -LiteralPath $sourcePath -Value (@($source) + 'not-a-hash')
         & (Join-Path $PSScriptRoot '../tools/Prepare-KHDBStorage.ps1') -SourcePath $sourcePath -OutputRoot $package 6>$null 3>$null
 
-        # Blob 'khdb/manifest.json' -> <package>/manifest.json, 'khdb/shards/<name>' -> <package>/shards/<name>
-        Mock -ModuleName Elysium Invoke-DownloadWithRetry {
-            $blob = ([uri]$Uri).AbsolutePath -replace '^/khdb/khdb/', ''
-            Copy-Item -LiteralPath (Join-Path $package $blob) -Destination $TargetPath
-        }
+        Copy-Item -LiteralPath (Join-Path $package 'shards') -Destination (Join-Path $remote 'bucket/khdb/shards') -Recurse
+        Copy-Item -LiteralPath (Join-Path $package 'manifest.json') -Destination (Join-Path $remote 'bucket/khdb/manifest.json')
+        $server = Start-FakeStorage -Root $remote
+        Set-Content -LiteralPath (Join-Path $root 'ElysiumSettings.txt') -Value ((New-S3Settings $server.Url).GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })
     }
+
+    AfterAll { Stop-FakeStorage $server }
 
     It 'publishes valid entries only and the client rebuilds exactly the sorted, unique, upper-case set' {
         (Get-Content -LiteralPath (Join-Path $package 'manifest.json') -Raw | ConvertFrom-Json).shards.Count | Should -BeGreaterThan 100
         Get-Content -LiteralPath (Join-Path $package 'invalid-hashes.txt') | Should -Contain 'not-a-hash'
-        Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
+        Update-ElysiumKhdb -MaxParallelTransfers 8 6>$null
         Get-Content -LiteralPath (Join-Path $root 'khdb.txt') | Should -Be $expected
+    }
+}
+
+Describe 'Storage transfers' {
+    BeforeAll {
+        $remote = Join-Path $TestDrive 'store'
+        New-Item -ItemType Directory -Path (Join-Path $remote 'bucket/flaky') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $remote 'bucket/flaky/object.txt') -Value 'eventually'
+        $server = Start-FakeStorage -Root $remote
+        $s3 = Get-StorageConfig (New-S3Settings $server.Url)
+        $body = [System.Text.Encoding]::UTF8.GetBytes('encrypted export bytes')
+        $upload = Join-Path $TestDrive 'upload.enc'
+        [System.IO.File]::WriteAllBytes($upload, $body)
+    }
+
+    AfterAll { Stop-FakeStorage $server }
+
+    BeforeEach { Mock Start-Sleep {} }
+
+    It 'signs an Azure PUT with Content-MD5 and the block-blob headers' {
+        $azure = Get-StorageConfig @{ storageAccountName = 'acct'; containerName = 'uploads'; sasToken = 'sv=2022-11-02&sig=x' }
+        $request = New-StorageRequest -Storage $azure -Method PUT -Key 'CONTOSO.enc' -Body $body
+        $request.RequestUri.AbsoluteUri | Should -Be 'https://acct.blob.core.windows.net/uploads/CONTOSO.enc?sv=2022-11-02&sig=x'
+        $request.Headers.GetValues('x-ms-blob-type') | Should -Be 'BlockBlob'
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        [Convert]::ToBase64String($request.Content.Headers.ContentMD5) | Should -Be ([Convert]::ToBase64String($md5.ComputeHash($body)))
+    }
+
+    It 'rejects incomplete storage settings before anything is sent' {
+        { Get-StorageConfig @{ storageAccountName = 'acct'; containerName = 'uploads' } } | Should -Throw '*sasToken*'
+        { Get-StorageConfig @{ StorageProvider = 'S3'; s3BucketName = 'b'; s3AccessKeyId = 'a'; s3SecretAccessKey = 's' } } | Should -Throw '*s3EndpointUrl*'
+    }
+
+    It 'uploads to S3 in one PUT that the store accepts against the signed SHA-256' {
+        Invoke-StorageUpload -Storage $s3 -Key 'uploads/CONTOSO.enc' -Path $upload
+        [System.IO.File]::ReadAllBytes((Join-Path $remote 'bucket/uploads/CONTOSO.enc')) | Should -Be $body
+        Get-FakeStorageLog $server | Should -Be @('PUT bucket/uploads/CONTOSO.enc')   # no read-back
+    }
+
+    It 'surfaces the service error when an upload is rejected' {
+        { Invoke-StorageUpload -Storage $s3 -Key 'reject/CONTOSO.enc' -Path $upload } | Should -Throw '*HTTP 400*BadDigest*'
+    }
+
+    It 'fails a 404 download at once, without retrying' {
+        { Invoke-StorageDownload -Storage $s3 -Key 'missing.txt' -TargetPath (Join-Path $TestDrive 'missing.txt') } | Should -Throw '*HTTP 404*'
+        Should -Invoke Start-Sleep -Times 0 -Exactly
+    }
+
+    It 'retries a transient 503 and then succeeds' {
+        $target = Join-Path $TestDrive 'flaky.txt'
+        Invoke-StorageDownload -Storage $s3 -Key 'flaky/object.txt' -TargetPath $target 3>$null
+        Get-Content -LiteralPath $target | Should -Be 'eventually'
+        Should -Invoke Start-Sleep -Times 1 -Exactly
     }
 }

@@ -182,3 +182,31 @@ function Get-KhdbPath([hashtable]$settings) {
     $khdbName = if ([string]::IsNullOrWhiteSpace($settings['WeakPasswordsDatabase'])) { 'khdb.txt' } else { $settings['WeakPasswordsDatabase'] }
     return (Join-Path -Path (Get-InstallationPath $settings) -ChildPath $khdbName)
 }
+
+function Receive-KhdbShard {
+    # Runs in an Invoke-InModuleRunspace worker: download one shard to staging, check size and SHA-256
+    # against its manifest entry, then move it into the local shard directory.
+    param(
+        [Parameter(Mandatory)][hashtable]$Storage,
+        [string]$RemotePrefix,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Sha256,
+        [Parameter(Mandatory)][long]$Size,
+        [Parameter(Mandatory)][string]$StagingRoot,
+        [Parameter(Mandatory)][string]$ShardRoot
+    )
+
+    $stagingPath = Join-Path -Path $StagingRoot -ChildPath $Name
+    Ensure-Directory (Split-Path -Path $stagingPath -Parent)
+    Invoke-StorageDownload -Storage $Storage -Key (Combine-StoragePath -Prefix $RemotePrefix -Name $Name) -TargetPath $stagingPath
+
+    $actualSize = (Get-Item -LiteralPath $stagingPath).Length
+    if ($actualSize -ne $Size) { throw "Shard '$Name' size mismatch. Expected $Size bytes, got $actualSize." }
+    $actualHash = Get-FileSha256Lower -Path $stagingPath
+    if ($actualHash -ne $Sha256) { throw "Shard '$Name' checksum mismatch. Expected $Sha256, got $actualHash." }
+
+    $finalPath = Join-Path -Path $ShardRoot -ChildPath $Name
+    Ensure-Directory (Split-Path -Path $finalPath -Parent)
+    Move-Item -LiteralPath $stagingPath -Destination $finalPath -Force
+    Write-Host ("Shard '{0}' updated." -f $Name)
+}

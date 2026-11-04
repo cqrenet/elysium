@@ -3,7 +3,10 @@ Set-StrictMode -Version Latest
 # root scripts' $ErrorActionPreference = 'Stop' would not reach them without this.
 $ErrorActionPreference = 'Stop'
 
-$script:ElysiumVersion = (Import-PowerShellDataFile -Path (Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.psd1')).ModuleVersion
+$script:ModuleManifestPath = Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.psd1'
+$script:ElysiumVersion = (Import-PowerShellDataFile -Path $ModuleManifestPath).ModuleVersion
+# Process-wide; Windows PowerShell 5.1's HttpClient otherwise may not offer TLS 1.2.
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 # ponytail: settings, KHDB and Reports still live in the repo root next to the scripts; this moves
 # to $env:ProgramData\Elysium together with the .psd1 config.
 $script:InstallRoot = Split-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -Parent
