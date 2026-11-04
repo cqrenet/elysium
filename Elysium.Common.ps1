@@ -3,14 +3,15 @@ $script:ElysiumVersion = '2.4.6'
 function Invoke-RestartWithExecutable {
     param(
         [string]$ExecutablePath,
+        [string]$ScriptPath,
         [hashtable]$BoundParameters,
         [object[]]$UnboundArguments
     )
 
     if (-not $ExecutablePath) { return }
-    if (-not $PSCommandPath) { return }
+    if (-not $ScriptPath) { return }
 
-    $argList = @('-NoLogo', '-NoProfile', '-File', $PSCommandPath)
+    $argList = @('-NoLogo', '-NoProfile', '-File', $ScriptPath)
 
     if ($BoundParameters) {
         foreach ($entry in $BoundParameters.GetEnumerator()) {
@@ -43,7 +44,9 @@ function Restart-WithPwshIfAvailable {
     $pwsh = Get-Command -Name 'pwsh' -ErrorAction SilentlyContinue
     if (-not $pwsh) { return }
     Write-Host ("PowerShell 7 detected at '{0}'; relaunching script under pwsh..." -f $pwsh.Path)
-    Invoke-RestartWithExecutable -ExecutablePath $pwsh.Path -BoundParameters $BoundParameters -UnboundArguments $UnboundArguments
+    # $PSCommandPath here would be this helper file (where the function is defined), not the
+    # script being relaunched; $MyInvocation.PSCommandPath is the script that called us.
+    Invoke-RestartWithExecutable -ExecutablePath $pwsh.Path -ScriptPath $MyInvocation.PSCommandPath -BoundParameters $BoundParameters -UnboundArguments $UnboundArguments
 }
 
 function Restart-WithWindowsPowerShellIfAvailable {
@@ -68,7 +71,7 @@ function Restart-WithWindowsPowerShellIfAvailable {
         return
     }
     Write-Host ("Windows PowerShell detected at '{0}'; relaunching script under powershell.exe..." -f $powershellPath)
-    Invoke-RestartWithExecutable -ExecutablePath $powershellPath -BoundParameters $BoundParameters -UnboundArguments $UnboundArguments
+    Invoke-RestartWithExecutable -ExecutablePath $powershellPath -ScriptPath $MyInvocation.PSCommandPath -BoundParameters $BoundParameters -UnboundArguments $UnboundArguments
 }
 
 # ---------------------------------------------------------------------------
