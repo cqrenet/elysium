@@ -37,28 +37,20 @@ if (-not (Test-Path -LiteralPath $commonHelper)) { throw "Common helper not foun
 . $commonHelper
 Restart-WithPwshIfAvailable -BoundParameters $PSBoundParameters -UnboundArguments $MyInvocation.UnboundArguments
 
-function Read-KeyValueSettings {
-    param([string]$Path)
-    $result = @{}
-    if (-not (Test-Path -LiteralPath $Path)) { throw "Settings file not found at $Path" }
-    Get-Content -LiteralPath $Path | ForEach-Object {
-        $line = $_
-        if (-not $line) { return }
-        $trimmed = $line.Trim()
-        if (-not $trimmed) { return }
-        if ($trimmed.StartsWith('#')) { return }
-        $kv = $line -split '=', 2
-        if ($kv.Count -ne 2) { return }
-        $key = $kv[0].Trim()
-        $value = $kv[1].Trim()
-        if (-not $key) { return }
-        if ($value.StartsWith("'") -and $value.EndsWith("'") -and $value.Length -ge 2) {
-            $value = $value.Substring(1, $value.Length - 2)
-        }
-        $result[$key] = $value
+function Start-LithnetTranscript {
+    param([string]$BasePath)
+    try {
+        $logsDir = Join-Path -Path $BasePath -ChildPath 'Reports/logs'
+        if (-not (Test-Path $logsDir)) { New-Item -Path $logsDir -ItemType Directory -Force | Out-Null }
+        $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $logPath = Join-Path -Path $logsDir -ChildPath "update-lithnet-$ts.log"
+        Start-Transcript -Path $logPath -Force | Out-Null
+    } catch {
+        Write-Warning "Could not start transcript: $($_.Exception.Message)"
     }
-    return $result
 }
+
+function Stop-LithnetTranscript { try { Stop-Transcript | Out-Null } catch {} }
 
 function Get-BooleanSetting {
     param(
@@ -84,84 +76,95 @@ function Resolve-ExistingPath {
     return (Resolve-Path -LiteralPath $PathValue).Path
 }
 
-if (-not $SettingsPath) {
-    $SettingsPath = Join-Path -Path $PSScriptRoot -ChildPath 'ElysiumSettings.txt'
-}
-$settings = Read-KeyValueSettings -Path $SettingsPath
-
-$storePathSetting = $settings['LithnetStorePath']
-$storePath = Resolve-ExistingPath -PathValue $storePathSetting -Description 'Lithnet store'
-
-$settingsHashSources = Get-ListFromSetting -Value $settings['LithnetHashSources']
-$settingsPlainSources = Get-ListFromSetting -Value $settings['LithnetPlaintextSources']
-$settingsBannedSources = Get-ListFromSetting -Value $settings['LithnetBannedWordSources']
-
-$hashSourcePaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($path in @($HashFiles) + $settingsHashSources) {
-    if ([string]::IsNullOrWhiteSpace($path)) { continue }
-    $resolved = Resolve-ExistingPath -PathValue $path -Description 'Hash list'
-    [void]$hashSourcePaths.Add($resolved)
-}
-if ($hashSourcePaths.Count -eq 0) {
-    $defaultKhdb = Join-Path -Path $PSScriptRoot -ChildPath 'khdb.txt'
-    if (Test-Path -LiteralPath $defaultKhdb) {
-        [void]$hashSourcePaths.Add((Resolve-Path -LiteralPath $defaultKhdb).Path)
-    } else {
-        throw 'No hash files were provided via parameters or LithnetHashSources, and khdb.txt was not found.'
-    }
-}
-
-$plaintextSourcePaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($path in @($PlaintextFiles) + $settingsPlainSources) {
-    if ([string]::IsNullOrWhiteSpace($path)) { continue }
-    $resolved = Resolve-ExistingPath -PathValue $path -Description 'Plaintext password list'
-    [void]$plaintextSourcePaths.Add($resolved)
-}
-
-$bannedWordSourcePaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($path in @($BannedWordFiles) + $settingsBannedSources) {
-    if ([string]::IsNullOrWhiteSpace($path)) { continue }
-    $resolved = Resolve-ExistingPath -PathValue $path -Description 'Banned word list'
-    [void]$bannedWordSourcePaths.Add($resolved)
-}
-
-$syncHibp = Get-BooleanSetting -Value $settings['LithnetSyncHibp'] -Default:$false
-if ($SkipHibpSync) { $syncHibp = $false }
-
-Write-Host "Importing LithnetPasswordProtection module..."
+Start-LithnetTranscript -BasePath $PSScriptRoot
 try {
-    Import-Module -Name LithnetPasswordProtection -ErrorAction Stop | Out-Null
-} catch {
-    throw "LithnetPasswordProtection module not found: $($_.Exception.Message). Install it from https://github.com/lithnet/password-protection."
-}
+    if (-not $SettingsPath) {
+        $SettingsPath = Join-Path -Path $PSScriptRoot -ChildPath 'ElysiumSettings.txt'
+    }
+    if (-not (Test-Path -LiteralPath $SettingsPath)) { throw "Settings file not found at $SettingsPath" }
+    $settings = Read-KeyValueSettingsFile -Path $SettingsPath
 
-Write-Host ("Opening Lithnet store at '{0}'..." -f $storePath)
-Open-Store -Path $storePath
-$storeOpened = $true
-try {
-    if ($syncHibp) {
-        Write-Host 'Synchronizing compromised hashes from Have I Been Pwned (this can take a while)...'
-        Sync-HashesFromHibp
+    $storePathSetting = $settings['LithnetStorePath']
+    $storePath = Resolve-ExistingPath -PathValue $storePathSetting -Description 'Lithnet store'
+
+    $settingsHashSources = Get-ListFromSetting -Value $settings['LithnetHashSources']
+    $settingsPlainSources = Get-ListFromSetting -Value $settings['LithnetPlaintextSources']
+    $settingsBannedSources = Get-ListFromSetting -Value $settings['LithnetBannedWordSources']
+
+    $hashSourcePaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in @($HashFiles) + $settingsHashSources) {
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        $resolved = Resolve-ExistingPath -PathValue $path -Description 'Hash list'
+        [void]$hashSourcePaths.Add($resolved)
+    }
+    if ($hashSourcePaths.Count -eq 0) {
+        # Same resolution as Update-KHDB.ps1 / Test-WeakADPasswords.ps1, so the default is the KHDB they use.
+        $installationPath = $settings['InstallationPath']
+        if ([string]::IsNullOrWhiteSpace($installationPath)) { $installationPath = $PSScriptRoot }
+        elseif (-not [System.IO.Path]::IsPathRooted($installationPath)) { $installationPath = Join-Path -Path $PSScriptRoot -ChildPath $installationPath }
+        $khdbName = if ([string]::IsNullOrWhiteSpace($settings['WeakPasswordsDatabase'])) { 'khdb.txt' } else { $settings['WeakPasswordsDatabase'] }
+        $defaultKhdb = Join-Path -Path $installationPath -ChildPath $khdbName
+        if (Test-Path -LiteralPath $defaultKhdb) {
+            [void]$hashSourcePaths.Add((Resolve-Path -LiteralPath $defaultKhdb).Path)
+        } else {
+            throw "No hash files were provided via parameters or LithnetHashSources, and the KHDB was not found at '$defaultKhdb'."
+        }
     }
 
-    foreach ($hashFile in ($hashSourcePaths.ToArray() | Sort-Object)) {
-        Write-Host ("Importing NTLM hash list '{0}'..." -f $hashFile)
-        Import-CompromisedPasswordHashes -Filename $hashFile
+    $plaintextSourcePaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in @($PlaintextFiles) + $settingsPlainSources) {
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        $resolved = Resolve-ExistingPath -PathValue $path -Description 'Plaintext password list'
+        [void]$plaintextSourcePaths.Add($resolved)
     }
 
-    foreach ($plainFile in ($plaintextSourcePaths.ToArray() | Sort-Object)) {
-        Write-Host ("Importing plaintext password list '{0}'..." -f $plainFile)
-        Import-CompromisedPasswords -Filename $plainFile
+    $bannedWordSourcePaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in @($BannedWordFiles) + $settingsBannedSources) {
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        $resolved = Resolve-ExistingPath -PathValue $path -Description 'Banned word list'
+        [void]$bannedWordSourcePaths.Add($resolved)
     }
 
-    foreach ($bannedFile in ($bannedWordSourcePaths.ToArray() | Sort-Object)) {
-        Write-Host ("Importing banned word list '{0}'..." -f $bannedFile)
-        Import-BannedWords -Filename $bannedFile
+    $syncHibp = Get-BooleanSetting -Value $settings['LithnetSyncHibp'] -Default:$false
+    if ($SkipHibpSync) { $syncHibp = $false }
+
+    Write-Host "Importing LithnetPasswordProtection module..."
+    try {
+        Import-Module -Name LithnetPasswordProtection -ErrorAction Stop | Out-Null
+    } catch {
+        throw "LithnetPasswordProtection module not found: $($_.Exception.Message). Install it from https://github.com/lithnet/password-protection."
     }
 
-    Write-Host 'Lithnet store update completed successfully.'
+    Write-Host ("Opening Lithnet store at '{0}'..." -f $storePath)
+    Open-Store -Path $storePath
+    $storeOpened = $true
+    try {
+        if ($syncHibp) {
+            Write-Host 'Synchronizing compromised hashes from Have I Been Pwned (this can take a while)...'
+            Sync-HashesFromHibp
+        }
+
+        foreach ($hashFile in ($hashSourcePaths.ToArray() | Sort-Object)) {
+            Write-Host ("Importing NTLM hash list '{0}'..." -f $hashFile)
+            Import-CompromisedPasswordHashes -Filename $hashFile
+        }
+
+        foreach ($plainFile in ($plaintextSourcePaths.ToArray() | Sort-Object)) {
+            Write-Host ("Importing plaintext password list '{0}'..." -f $plainFile)
+            Import-CompromisedPasswords -Filename $plainFile
+        }
+
+        foreach ($bannedFile in ($bannedWordSourcePaths.ToArray() | Sort-Object)) {
+            Write-Host ("Importing banned word list '{0}'..." -f $bannedFile)
+            Import-BannedWords -Filename $bannedFile
+        }
+
+        Write-Host 'Lithnet store update completed successfully.'
+    } finally {
+        if ($storeOpened) {
+            try { Close-Store } catch {}
+        }
+    }
 } finally {
-    if ($storeOpened) {
-        try { Close-Store } catch {}
-    }
+    Stop-LithnetTranscript
 }

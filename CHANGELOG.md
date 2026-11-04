@@ -6,6 +6,14 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- `README.md` swapped the menu numbers for Lithnet (documented as 5) and Uninstall (documented as 4), and `Uninstall.ps1` had no confirmation, so an operator following the README to update the Lithnet store recursively deleted the whole install directory, reports included. The README and the `Elysium.ps1` help block now match the menu, and `Uninstall.ps1` requires typing `YES` (or `-Force` for unattended use).
+- `decrypt.py` could not decrypt any current export: it did not recognize `ELY2` (so v2.4.6 files fell through to the legacy branch), and its `ELY1` branch used pycryptodome's default PBKDF2 PRF (HMAC-SHA1) while `Extract-NTHashes.ps1` has always used HMAC-SHA256. It now reads `ELY2` (verifying the HMAC before decrypting), `ELY1`, and the legacy format; encodes the passphrase as UTF-8 to match .NET; prompts for the passphrase without echo; refuses input that does not end in `.enc` instead of overwriting it; and exits non-zero on failure. New `tests/test_decrypt.py` round-trips through the real PowerShell encryptor.
+- `Test-WeakADPasswords.ps1` did not relaunch under Windows PowerShell like `Extract-NTHashes.ps1` does, so a direct run under `pwsh` loaded DSInternals through `-UseWindowsPowerShell` implicit remoting, which returns deserialized objects. It also set the PSGallery repository to `Trusted` on the host as a side effect of installing DSInternals; that is removed (`-Force` on the install already covers the prompt).
+- `Update-LithnetStore.ps1` ignored `InstallationPath`/`WeakPasswordsDatabase` and always looked for `khdb.txt` next to the script; it now resolves the same KHDB path as the other scripts. It also writes a transcript to `Reports/logs/` like the other operational scripts and uses the shared settings parser instead of its own copy.
+
 ## [2.4.6] — 2026-07-29
 
 ### Fixed
