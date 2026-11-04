@@ -8,7 +8,7 @@
     CompanyName       = 'CQRE.NET'
     Description       = 'Active Directory weak-password assessment: KHDB updates, DSInternals password-quality tests, hash export, Lithnet Password Protection import.'
     PowerShellVersion = '5.1'
-    FunctionsToExport = @('Update-ElysiumKhdb', 'Update-ElysiumLithnetStore')
+    FunctionsToExport = @('Update-ElysiumKhdb', 'Update-ElysiumLithnetStore', 'Test-ElysiumPasswordQuality')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

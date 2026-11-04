@@ -69,3 +69,28 @@ function Resolve-ExistingPath {
     }
     return (Resolve-Path -LiteralPath $PathValue).Path
 }
+
+# Define the function to extract domain details from settings
+function Get-DomainDetailsFromSettings {
+    param (
+        [hashtable]$Settings
+    )
+
+    $domainDetails = [ordered]@{}
+    $counter = 1
+    while ($true) {
+        $nameKey = "Domain${counter}Name"
+        $dcKey = "Domain${counter}DC"
+        if ($Settings.ContainsKey($nameKey)) {
+            $domainDetails["$counter"] = @{
+                Name = $Settings[$nameKey]
+                DC   = $Settings[$dcKey]
+            }
+            $counter++
+        }
+        else {
+            break
+        }
+    }
+    return $domainDetails
+}

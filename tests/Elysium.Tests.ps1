@@ -221,3 +221,45 @@ Describe 'Update-ElysiumLithnetStore' {
         { Update-ElysiumLithnetStore -SkipHibpSync 6>$null } | Should -Throw "*KHDB was not found at '$khdb'*"
     }
 }
+
+Describe 'Password-quality helpers' {
+    It 'lists DomainNName/DomainNDC pairs in order and stops at the first gap' {
+        $domains = Get-DomainDetailsFromSettings -Settings @{
+            Domain1Name = 'contoso.local'; Domain1DC = 'dc1.contoso.local'
+            Domain2Name = 'fabrikam.local'; Domain2DC = 'dc1.fabrikam.local'
+            Domain4Name = 'unreachable.local'; Domain4DC = 'dc'
+        }
+        @($domains.Keys) | Should -Be @('1', '2')
+        $domains['2'].Name | Should -Be 'fabrikam.local'
+        $domains['2'].DC | Should -Be 'dc1.fabrikam.local'
+    }
+
+    It 'hands DSInternals an already clean KHDB unchanged' {
+        $path = Join-Path $TestDrive 'clean.txt'
+        Set-Content -LiteralPath $path -Value @(('0' * 32), ('A' * 32))
+        $resolved = Resolve-DSInternalsWeakHashFile -Path $path
+        $resolved.Path | Should -Be $path
+        $resolved.IsTemporary | Should -BeFalse
+    }
+
+    It 'normalizes case, HASH:count suffixes and duplicates into a temporary file' {
+        $path = Join-Path $TestDrive 'legacy.txt'
+        Set-Content -LiteralPath $path -Value @(('0' * 32), ('a' * 32 + ':7'), ('A' * 32))
+        $resolved = Resolve-DSInternalsWeakHashFile -Path $path 3>$null
+        try {
+            $resolved.IsTemporary | Should -BeTrue
+            Get-Content -LiteralPath $resolved.Path | Should -Be @(('0' * 32), ('A' * 32))
+        } finally {
+            Remove-Item -LiteralPath $resolved.Path -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'rejects unsorted and malformed KHDB files' {
+        $unsorted = Join-Path $TestDrive 'unsorted.txt'
+        Set-Content -LiteralPath $unsorted -Value @(('B' * 32), ('A' * 32))
+        { Resolve-DSInternalsWeakHashFile -Path $unsorted } | Should -Throw '*not sorted*'
+        $malformed = Join-Path $TestDrive 'malformed.txt'
+        Set-Content -LiteralPath $malformed -Value 'not-a-hash'
+        { Resolve-DSInternalsWeakHashFile -Path $malformed } | Should -Throw '*invalid content at line 1*'
+    }
+}
