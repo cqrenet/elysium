@@ -92,6 +92,10 @@ Describe 'KHDB manifest and merge' {
         { Validate-Manifest ([pscustomobject]@{ shards = @((& $ok '00.txt'), (& $ok '00.txt')) }) } | Should -Throw '*duplicate*'
         { Validate-Manifest ([pscustomobject]@{ shards = @([pscustomobject]@{ name = '00.txt'; sha256 = 'abc'; size = 1 }) }) } | Should -Throw '*sha256*'
         { Validate-Manifest ([pscustomobject]@{ shardSize = 9; shards = @((& $ok '00.txt')) }) } | Should -Throw '*shardSize*'
+        foreach ($name in '../x.txt', '..\x.txt', 'a/../../x.txt', '/etc/x.txt', 'C:x.txt', '00.txt:stream') {
+            { Validate-Manifest ([pscustomobject]@{ shards = @((& $ok $name)) }) } | Should -Throw '*not a plain relative path*'
+        }
+        { Validate-Manifest ([pscustomobject]@{ shards = @((& $ok 'sub/00.txt')) }) } | Should -Not -Throw
     }
 
     It 'throws when shards would merge out of order' {
@@ -171,6 +175,13 @@ Describe 'Update-ElysiumKhdb (incremental sync against a fake S3 store)' {
         Add-Content -LiteralPath (Join-Path $remote 'bucket/khdb/shards/00.txt') -Value 'tampered'
         { Update-ElysiumKhdb -MaxParallelTransfers 2 6>$null } | Should -Throw '*00.txt*mismatch*'
         Get-Content -LiteralPath $khdb | Should -Be $before
+    }
+
+    It 'refuses a manifest whose shard names point outside the shard directory' {
+        # What a tampered bucket could serve: a valid checksum for a file meant to land two levels up.
+        Publish-Shards @{ '../../escaped.txt' = @('00112233445566778899AABBCCDDEEFF') }
+        { Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null } | Should -Throw "*'../../escaped.txt'*"
+        Test-Path -LiteralPath (Join-Path $TestDrive 'escaped.txt') | Should -BeFalse
     }
 }
 

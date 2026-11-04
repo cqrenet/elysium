@@ -57,6 +57,11 @@ function Validate-Manifest {
         if (-not $entry) { throw 'Manifest contains null shard entries.' }
         $name = [string]$entry.name
         if ([string]::IsNullOrWhiteSpace($name)) { throw 'Manifest shard entry is missing name.' }
+        # Shard names are joined onto local paths. A tampered manifest must not be able to place files
+        # outside the shard directory (e.g. over Elysium's own scripts on an admin host).
+        if ([System.IO.Path]::IsPathRooted($name) -or $name.Contains(':') -or @($name -split '[\\/]') -contains '..') {
+            throw "Manifest shard name '$name' is not a plain relative path inside the shard directory."
+        }
         $hash = [string]$entry.sha256
         if ([string]::IsNullOrWhiteSpace($hash) -or $hash.Length -ne 64) { throw "Manifest shard '$name' is missing a valid sha256." }
         $sizeValue = [string]$entry.size
