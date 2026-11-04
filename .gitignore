@@ -7,3 +7,4 @@ ElysiumSettings.txt
 khdb-manifest.json
 /elysium/.vscode
 /.vscode
+__pycache__/
