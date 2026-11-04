@@ -17,7 +17,7 @@ Sensitive operations are confined only to the dedicated host. In the third step,
 
 ## Versioning and Releases
 
-Elysium uses a **unified project version** starting with v2.2.0. Every script, the settings template, and the documentation share the same version number so you can verify consistency at a glance by checking the header of any `.ps1` file. Releases are tagged in Git (`v<major>.<minor>.<patch>`) and documented in `CHANGELOG.md`.
+Elysium uses a **unified project version** starting with v2.2.0. The version is defined once, as `ModuleVersion` in `src/Elysium/Elysium.psd1`; the scripts read it from there at runtime (User-Agent, usage beacon, diagnostic dumps). To release, change `ModuleVersion`, add the `CHANGELOG.md` entry, commit, and tag `v<major>.<minor>.<patch>`.
 
 Prior to v2.2.0, each script carried its own version number; those historical versions are preserved in the changelog for reference.
 

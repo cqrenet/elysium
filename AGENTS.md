@@ -25,8 +25,13 @@ The tool performs three core workflows:
 
 ```
 Elysium.ps1                    # Main menu / orchestrator script
-Elysium.Common.ps1             # Shared helpers: pwsh relauncher, Windows PS fallback
+Elysium.Common.ps1             # Transitional loader: dot-sources src/Elysium/Private/*.ps1 into the calling script
 ElysiumSettings.txt            # Live configuration (key=value format, # comments)
+
+src/Elysium/Elysium.psd1       # Module manifest; ModuleVersion is the single source of the project version
+src/Elysium/Elysium.psm1       # Root module: dot-sources Private/ and Public/
+src/Elysium/Private/           # Shared helpers: Relaunch, Settings, Storage (Azure/S3/SigV4), AdPreflight
+src/Elysium/Public/            # Exported cmdlets (root scripts are being converted into these)
 ElysiumSettings.txt.sample     # Documented template for operators
 
 Update-KHDB.ps1                # KHDB downloader: manifest + shard incremental update
@@ -122,4 +127,5 @@ No CI pipeline exists. The one automated check is `python3 tests/test_decrypt.py
 - Do **not** introduce new package-manager files (e.g., `package.json`, `pyproject.toml`, `Cargo.toml`). This project is intentionally dependency-light and script-driven.
 - When adding new settings, keep the `key=value` flat format and update both `ElysiumSettings.txt.sample` and any parser that reads the file.
 - If you add a new operational script, include the standard banner, strict mode, transcript logging, and the `Elysium.Common.ps1` relauncher pattern.
+- The version lives only in `src/Elysium/Elysium.psd1` (`ModuleVersion`); code reads it as `$ElysiumVersion`. Do not add version numbers to file banners.
 - The `.gitignore` excludes `khdb.txt`, `ElysiumSettings.txt`, `Reports/`, `khdb-shards/`, and `khdb-manifest.json`. Exception: `khdb.txt` has been tracked since the first commit, so the ignore rule does not apply to it. Do not `git rm` it casually - client clones have a locally modified `khdb.txt`, and an upstream deletion makes their `git pull` fail.
