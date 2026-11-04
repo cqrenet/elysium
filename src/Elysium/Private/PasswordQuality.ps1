@@ -223,28 +223,6 @@ function Import-CompatModule {
     Write-Verbose ("Imported module '{0}' (Core={1}, Windows={2})" -f $Name, $runningInPSCore, $onWindows)
 }
 
-# Function to get UPN for a given SAM account name
-function Get-UserUPN {
-    param (
-        [string]$SamAccountName,
-        [string]$Domain,
-        [System.Management.Automation.PSCredential]$Credential
-    )
-    
-    Write-Verbose "Attempting to get UPN for $SamAccountName in domain $Domain"
-    try {
-        # Remove domain prefix if exists
-        $simplifiedSamAccountName = $SamAccountName -replace '^.*\\', ''
-        
-        $user = Get-ADUser -Identity $simplifiedSamAccountName -Properties UserPrincipalName -Server $Domain -Credential $Credential
-        Write-Verbose "UPN found: $($user.UserPrincipalName)"
-        return $user.UserPrincipalName
-    } catch {
-        Write-Verbose ("Failed to get UPN for {0}: {1}" -f $SamAccountName, $_.Exception.Message)
-        return "UPN not found"
-    }
-}
-
 function Resolve-DSInternalsWeakHashFile {
     param(
         [Parameter(Mandatory)][string]$Path
@@ -456,6 +434,12 @@ function Invoke-WeakPasswordTest {
         }
     }
 
+    # UPNs come from the accounts already replicated above - no extra LDAP lookup per account.
+    $upnBySam = @{}
+    foreach ($account in @($accounts)) {
+        if ($account.SamAccountName -and $account.UserPrincipalName) { $upnBySam[[string]$account.SamAccountName] = [string]$account.UserPrincipalName }
+    }
+
     # Report generation with dynamic content and UPNs
     $reportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_WeakPasswordReport_$timestamp.txt"
     $upnOnlyReportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_DictionaryPasswordUPNs_$timestamp.txt"
@@ -475,8 +459,8 @@ function Invoke-WeakPasswordTest {
     foreach ($logonName in $dictionaryLogonNames) {
         $samAccountName = $logonName -replace '^.*\\', ''
         if (-not [string]::IsNullOrWhiteSpace($samAccountName) -and -not $dictionarySamToUpn.ContainsKey($samAccountName)) {
-            Write-Verbose "Looking up UPN for $samAccountName (dictionary hit)"
-            $upn = Get-UserUPN -SamAccountName $samAccountName -Domain $selectedDomain.DC -Credential $credential
+            $upn = $upnBySam[$samAccountName]
+            if ([string]::IsNullOrWhiteSpace($upn)) { $upn = "UPN not found" }
             $dictionarySamToUpn[$samAccountName] = $upn
             if ($upn -ne "UPN not found") {
                 $upnReportContent += $upn
@@ -531,7 +515,64 @@ function Invoke-WeakPasswordTest {
 
         $upnOnlyContent | Out-File -FilePath $upnOnlyReportPath -Encoding utf8 -ErrorAction Stop
         Write-Host "UPN-only report saved to $upnOnlyReportPath"
+
+        $findings = @(ConvertTo-PasswordQualityFinding -Result $testResults -UpnBySam $upnBySam)
+        $jsonReportPath = [System.IO.Path]::ChangeExtension($reportPath, '.json')
+        $jsonReport = [ordered]@{
+            tool             = 'Elysium'
+            version          = $ElysiumVersion
+            generatedAt      = (Get-Date).ToUniversalTime().ToString('o')
+            domain           = $selectedDomain.Name
+            domainController = $selectedDomain.DC
+            accountsTested   = @($accounts).Count
+            findings         = $findings
+        }
+        [System.IO.File]::WriteAllText($jsonReportPath, ($jsonReport | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+        Write-Host "JSON report saved to $jsonReportPath"
     } catch {
         Write-Error ("Failed to save report: {0}" -f $_.Exception.Message)
+    }
+
+    $findingCounts = [ordered]@{}
+    foreach ($finding in $findings) { $findingCounts[$finding.check] = $finding.count }
+    [pscustomobject]@{
+        Domain         = $selectedDomain.Name
+        AccountsTested = @($accounts).Count
+        Findings       = $findingCounts
+        ReportPath     = $reportPath
+        JsonReportPath = $jsonReportPath
+        UpnReportPath  = $upnOnlyReportPath
+    }
+}
+
+function ConvertTo-PasswordQualityFinding {
+    # Plain-data view of a DSInternals Test-PasswordQuality result for the JSON report: one finding per
+    # non-empty result property (WeakPassword, LMHash, ...) listing its accounts with their UPNs.
+    # DuplicatePasswordGroups stays grouped: each of its entries is a list of accounts sharing a password.
+    # Arrays are built with List.ToArray(), not pipeline output: Windows PowerShell 5.1's ConvertTo-Json
+    # serializes pipeline-wrapped arrays as {"value": [...], "Count": n}.
+    param(
+        [Parameter(Mandatory)][AllowNull()]$Result,
+        [hashtable]$UpnBySam = @{}
+    )
+
+    $toAccount = { param($logonName) [ordered]@{ account = [string]$logonName; upn = $UpnBySam[([string]$logonName -replace '^.*\\', '')] } }
+    foreach ($testResult in @($Result)) {
+        if ($null -eq $testResult) { continue }
+        foreach ($property in $testResult.PSObject.Properties) {
+            $items = @($property.Value | Where-Object { $null -ne $_ })
+            if ($items.Count -eq 0) { continue }
+            $accounts = [System.Collections.Generic.List[object]]::new()
+            foreach ($item in $items) {
+                if ($item -is [string]) {
+                    $accounts.Add((& $toAccount $item))
+                } else {
+                    $group = [System.Collections.Generic.List[object]]::new()
+                    foreach ($member in $item) { $group.Add((& $toAccount $member)) }
+                    $accounts.Add($group.ToArray())
+                }
+            }
+            [ordered]@{ check = $property.Name; count = $items.Count; accounts = $accounts.ToArray() }
+        }
     }
 }

@@ -257,6 +257,31 @@ Describe 'Password-quality helpers' {
         { Select-ElysiumDomain -DomainDetails $domains 6>$null } | Should -Throw '*Invalid selection*'
     }
 
+    It 'turns a password-quality result into JSON-ready findings with UPNs, keeping duplicate groups grouped' {
+        # Same shapes DSInternals returns: string sets, and a list of sets for DuplicatePasswordGroups.
+        $set = { param([string[]]$names) $h = [System.Collections.Generic.HashSet[string]]::new(); foreach ($n in $names) { [void]$h.Add($n) }; ,$h }
+        $groups = [System.Collections.Generic.List[object]]::new()
+        $groups.Add((& $set 'CONTOSO\bob', 'CONTOSO\carol'))
+        $result = [pscustomobject]@{
+            WeakPassword            = (& $set 'CONTOSO\alice', 'CONTOSO\svc-sql')
+            LMHash                  = (& $set @())
+            DuplicatePasswordGroups = $groups
+        }
+        $upns = @{ alice = 'alice@contoso.com'; bob = 'bob@contoso.com'; carol = 'carol@contoso.com' }
+        $json = @(ConvertTo-PasswordQualityFinding -Result $result -UpnBySam $upns) | ConvertTo-Json -Depth 8
+        $findings = $json | ConvertFrom-Json
+
+        @($findings.check) | Should -Be @('WeakPassword', 'DuplicatePasswordGroups')   # empty LMHash omitted
+        $weak = $findings | Where-Object check -eq 'WeakPassword'
+        $weak.count | Should -Be 2
+        ($weak.accounts | Where-Object account -eq 'CONTOSO\alice').upn | Should -Be 'alice@contoso.com'
+        ($weak.accounts | Where-Object account -eq 'CONTOSO\svc-sql').upn | Should -BeNullOrEmpty
+        $dup = $findings | Where-Object check -eq 'DuplicatePasswordGroups'
+        $dup.count | Should -Be 1
+        @($dup.accounts[0].account | Sort-Object) | Should -Be @('CONTOSO\bob', 'CONTOSO\carol')
+        $json | Should -Not -Match '"value"\s*:'   # no PowerShell array-wrapper artefacts
+    }
+
     It 'lists DomainNName/DomainNDC pairs in order and stops at the first gap' {
         $domains = Get-DomainDetailsFromSettings -Settings @{
             Domain1Name = 'contoso.local'; Domain1DC = 'dc1.contoso.local'
