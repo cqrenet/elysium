@@ -16,6 +16,10 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 - The `Restart-WithPwshIfAvailable` / `Restart-WithWindowsPowerShellIfAvailable` relaunchers in `Elysium.Common.ps1` relaunched `Elysium.Common.ps1` itself instead of the calling script (`$PSCommandPath` inside a function is the file that defines it), then exited. Whenever a relaunch fired, the script silently did nothing: `Update-KHDB.ps1`, `Prepare-KHDBStorage.ps1`, `Update-LithnetStore.ps1` and `Uninstall.ps1` started from Windows PowerShell on a host with `pwsh` installed (including menu options 1, 4 and 5), and `Extract-NTHashes.ps1` / `Test-WeakADPasswords.ps1` started directly from `pwsh`. They now relaunch the calling script with its parameters.
 - `Update-KHDB.ps1 -MaxParallelTransfers N`, as documented in the README, was silently ignored: the script had no `param()` block, so the value never reached the downloader and PowerShell 7 always used 5 concurrent transfers. The script now declares and forwards the parameter (values outside 1-64 are rejected).
 
+### Changed
+- Elysium is becoming a PowerShell module (`src/Elysium`). The manifest's `ModuleVersion` is now the only place the version is defined; the per-file banner versions and `Bump-Version.ps1` are gone. Shared helpers moved from `Elysium.Common.ps1` into `src/Elysium/Private` (`Elysium.Common.ps1` is now a loader for them), and the KHDB updater is the first exported cmdlet, `Update-ElysiumKhdb`; `Update-KHDB.ps1` remains as a thin wrapper, so the menu and existing invocations are unchanged.
+- Added Pester tests (`Invoke-Pester ./tests`): settings parsing, storage URIs, SigV4 signatures checked against botocore-generated values, manifest validation, and an end-to-end incremental KHDB sync against a fake storage container.
+
 ## [2.4.6] — 2026-07-29
 
 ### Fixed

@@ -4,6 +4,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:ElysiumVersion = (Import-PowerShellDataFile -Path (Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.psd1')).ModuleVersion
+# ponytail: settings, KHDB and Reports still live in the repo root next to the scripts; this moves
+# to $env:ProgramData\Elysium together with the .psd1 config.
+$script:InstallRoot = Split-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -Parent
 
 foreach ($folder in 'Private', 'Public') {
     foreach ($file in Get-ChildItem -Path (Join-Path -Path $PSScriptRoot -ChildPath $folder) -Filter '*.ps1') {

@@ -42,3 +42,15 @@ function Get-SettingsValue {
     if ($Settings.ContainsKey($Key)) { return $Settings[$Key] }
     return $null
 }
+
+function Get-BooleanSetting {
+    param(
+        [string]$Value,
+        [bool]$Default = $false
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $Default }
+    $parsed = $Default
+    if ([System.Boolean]::TryParse($Value, [ref]$parsed)) { return $parsed }
+    return $Default
+}

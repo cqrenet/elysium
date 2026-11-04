@@ -168,3 +168,145 @@ function New-S3Client {
     $cfg.ForcePathStyle = [bool]$ForcePathStyle
     return (New-Object Amazon.S3.AmazonS3Client($creds, $cfg))
 }
+
+# ---------------------------------------------------------------------------
+# HTTP download helpers (Azure SAS URI and native SigV4 S3), with retry
+# ---------------------------------------------------------------------------
+
+function New-HttpClient {
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [TimeSpan]::FromSeconds(600)
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Elysium/$ElysiumVersion (+Update-KHDB)")
+    return $client
+}
+
+function Invoke-DownloadWithRetry {
+    param(
+        [System.Net.Http.HttpClient]$Client,
+        [string]$Uri,
+        [string]$TargetPath,
+        [string]$Activity
+    )
+
+    $retries = 5
+    $delay = 2
+    for ($attempt = 0; $attempt -lt $retries; $attempt++) {
+        $response = $null
+        try {
+            $response = $Client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+            if (-not $response.IsSuccessStatusCode) {
+                $code = [int]$response.StatusCode
+                if (($code -ge 500 -and $code -lt 600) -or $code -eq 429 -or $code -eq 408) { throw "Transient HTTP error $code" }
+                throw "HTTP error $code"
+            }
+
+            $totalBytes = $response.Content.Headers.ContentLength
+            $stream = $response.Content.ReadAsStreamAsync().Result
+            $fs = [System.IO.File]::Create($TargetPath)
+            try {
+                $buffer = New-Object byte[] 8192
+                $totalRead = 0
+                while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $fs.Write($buffer, 0, $read)
+                    $totalRead += $read
+                    if ($totalBytes) {
+                        $pct = ($totalRead * 100.0) / $totalBytes
+                        Write-Progress -Activity $Activity -Status ("{0:N2}% Complete" -f $pct) -PercentComplete $pct
+                    } else {
+                        Write-Progress -Activity $Activity -Status ("Downloaded {0:N0} bytes" -f $totalRead) -PercentComplete 0
+                    }
+                }
+            } finally {
+                $fs.Close()
+                $stream.Close()
+            }
+
+            Write-Progress -Activity $Activity -Completed -Status 'Completed'
+            return
+        } catch {
+            if ($attempt -lt ($retries - 1)) {
+                Write-Warning "Download of '$Uri' failed (attempt $($attempt + 1)/$retries): $($_.Exception.Message). Retrying in ${delay}s..."
+                Start-Sleep -Seconds $delay
+                $delay = [Math]::Min($delay * 2, 30)
+            } else {
+                throw
+            }
+        } finally {
+            if ($response) { $response.Dispose() }
+        }
+    }
+}
+
+function Invoke-S3HttpDownloadWithRetry {
+    param(
+        [string]$EndpointUrl,
+        [string]$Bucket,
+        [string]$Key,
+        [string]$TargetPath,
+        [string]$Region,
+        [string]$AccessKeyId,
+        [string]$SecretAccessKey,
+        [bool]$ForcePathStyle,
+        [string]$Activity
+    )
+
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    [System.Net.Http.HttpClient]$client = [System.Net.Http.HttpClient]::new()
+    $retries = 5
+    $delay = 2
+    try {
+        for ($attempt = 0; $attempt -lt $retries; $attempt++) {
+            $request = $null
+            try {
+                $uri = BuildS3Uri -endpointUrl $EndpointUrl -bucket $Bucket -key $Key -forcePathStyle $ForcePathStyle
+                $payloadHash = (Get-HashHex (Get-Bytes ''))
+                $headers = BuildAuthHeaders -method 'GET' -uri $uri -region $Region -accessKey $AccessKeyId -secretKey $SecretAccessKey -payloadHash $payloadHash
+                $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
+                foreach ($kvp in $headers.GetEnumerator()) {
+                    $request.Headers.TryAddWithoutValidation($kvp.Key, $kvp.Value) | Out-Null
+                }
+
+                $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+                $null = $response.EnsureSuccessStatusCode()
+
+                $totalBytes = $response.Content.Headers.ContentLength
+                $stream = $response.Content.ReadAsStreamAsync().Result
+                $fs = [System.IO.File]::Create($TargetPath)
+                try {
+                    $buffer = New-Object byte[] 8192
+                    $totalRead = 0
+                    while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $fs.Write($buffer, 0, $read)
+                        $totalRead += $read
+                        if ($totalBytes) {
+                            $pct = ($totalRead * 100.0) / $totalBytes
+                            Write-Progress -Activity $Activity -Status ("{0:N2}% Complete" -f $pct) -PercentComplete $pct
+                        } else {
+                            Write-Progress -Activity $Activity -Status ("Downloaded {0:N0} bytes" -f $totalRead) -PercentComplete 0
+                        }
+                    }
+                } finally {
+                    $fs.Close()
+                    $stream.Close()
+                }
+
+                if ($response) { $response.Dispose() }
+                Write-Progress -Activity $Activity -Completed -Status 'Completed'
+                return
+            } catch {
+                if ($attempt -lt ($retries - 1)) {
+                    Write-Warning "Download of '$Key' failed (attempt $($attempt + 1)/$retries): $($_.Exception.Message). Retrying in ${delay}s..."
+                    Start-Sleep -Seconds $delay
+                    $delay = [Math]::Min($delay * 2, 30)
+                } else {
+                    throw
+                }
+            } finally {
+                if ($request) { $request.Dispose() }
+            }
+        }
+    } finally {
+        $client.Dispose()
+    }
+}
