@@ -74,7 +74,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-[string]$commonHelper = Join-Path -Path $PSScriptRoot -ChildPath 'Elysium.Common.ps1'
+# Provider-side tool in tools/; the shared helpers and default settings live in the repo root.
+$repoRoot = Split-Path -Path $PSScriptRoot -Parent
+[string]$commonHelper = Join-Path -Path $repoRoot -ChildPath 'Elysium.Common.ps1'
 if (-not (Test-Path -LiteralPath $commonHelper)) { throw "Common helper not found at $commonHelper" }
 . $commonHelper
 Restart-WithPwshIfAvailable -BoundParameters $PSBoundParameters -UnboundArguments $MyInvocation.UnboundArguments
@@ -715,7 +717,7 @@ if ($SettingsPath) {
     }
     $resolvedSettingsPath = (Resolve-Path -LiteralPath $SettingsPath).Path
 } else {
-    $defaultSettingsCandidate = Join-Path -Path $PSScriptRoot -ChildPath 'ElysiumSettings.txt'
+    $defaultSettingsCandidate = Join-Path -Path $repoRoot -ChildPath 'ElysiumSettings.txt'
     if (Test-Path -LiteralPath $defaultSettingsCandidate) {
         $resolvedSettingsPath = (Resolve-Path -LiteralPath $defaultSettingsCandidate).Path
     }
