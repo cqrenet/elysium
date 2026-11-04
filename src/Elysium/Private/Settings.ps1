@@ -94,3 +94,9 @@ function Get-DomainDetailsFromSettings {
     }
     return $domainDetails
 }
+
+function Normalize-ReportPath([string]$p) {
+    if ([string]::IsNullOrWhiteSpace($p)) { return (Join-Path -Path $InstallRoot -ChildPath 'Reports') }
+    if ([System.IO.Path]::IsPathRooted($p)) { return $p }
+    return (Join-Path -Path $InstallRoot -ChildPath $p)
+}

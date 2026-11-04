@@ -1,5 +1,5 @@
-# ELY2 round trip: encrypt with the real Protect-FileWithAES from Extract-NTHashes.ps1 (via pwsh),
-# decrypt with decrypt.py. Catches any drift between the two sides of the format.
+# ELY2 round trip: encrypt with the real Protect-FileWithAES (src/Elysium/Private/Crypto.ps1, via
+# pwsh), decrypt with decrypt.py. Catches any drift between the two sides of the format.
 # Run: python3 tests/test_decrypt.py   (needs pwsh on PATH and pycryptodome)
 
 import os
@@ -11,13 +11,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import decrypt  # noqa: E402
 
-# Loads only the function definition from the script's AST, so the script body never runs.
 ENCRYPT_PS1 = r'''
-param($Script, $In, $Out, $Pass)
+param($Crypto, $In, $Out, $Pass)
 $ErrorActionPreference = 'Stop'
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$null)
-$fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Protect-FileWithAES' }, $true)
-. ([scriptblock]::Create($fn.Extent.Text))
+. $Crypto
 Protect-FileWithAES -InputFile $In -OutputFile $Out -Passphrase $Pass 6>$null
 '''
 
@@ -30,7 +27,7 @@ def encrypt_with_powershell(plaintext: bytes, passphrase: str) -> bytes:
         with open(ps1, 'w', encoding='utf-8') as f:
             f.write(ENCRYPT_PS1)
         subprocess.run(['pwsh', '-NoProfile', '-File', ps1,
-                        '-Script', os.path.join(ROOT, 'Extract-NTHashes.ps1'),
+                        '-Crypto', os.path.join(ROOT, 'src', 'Elysium', 'Private', 'Crypto.ps1'),
                         '-In', src, '-Out', dst, '-Pass', passphrase], check=True)
         with open(dst, 'rb') as f:
             return f.read()

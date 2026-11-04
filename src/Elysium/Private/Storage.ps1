@@ -310,3 +310,82 @@ function Invoke-S3HttpDownloadWithRetry {
         $client.Dispose()
     }
 }
+
+# ---------------------------------------------------------------------------
+# Upload / verify helpers for the hash export (native SigV4 S3, file checksums)
+# ---------------------------------------------------------------------------
+
+function Get-FileSha256Hex([string]$path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $fs = [System.IO.File]::OpenRead($path)
+    try { return ([BitConverter]::ToString($sha.ComputeHash($fs))).Replace('-', '').ToLowerInvariant() } finally { $fs.Close(); $sha.Dispose() }
+}
+
+function Invoke-S3PutFile([string]$endpointUrl, [string]$bucket, [string]$key, [string]$filePath, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
+    $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
+    $payloadHash = Get-FileSha256Hex -path $filePath
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, $uri)
+        $stream = [System.IO.File]::OpenRead($filePath)
+        $req.Content = [System.Net.Http.StreamContent]::new($stream)
+        $hdrs = BuildAuthHeaders -method 'PUT' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
+        $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
+        $resp = $client.SendAsync($req).Result
+        if (-not $resp.IsSuccessStatusCode) { throw "S3 PUT failed: $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
+    } finally { if ($req) { $req.Dispose() }; if ($stream) { $stream.Close(); $stream.Dispose() }; $client.Dispose() }
+}
+
+function Invoke-S3GetToFile([string]$endpointUrl, [string]$bucket, [string]$key, [string]$targetPath, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
+    $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
+    $payloadHash = (Get-HashHex (Get-Bytes ''))
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
+        $hdrs = BuildAuthHeaders -method 'GET' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
+        $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
+        $resp = $client.SendAsync($req).Result
+        if (-not $resp.IsSuccessStatusCode) { throw "S3 GET failed: $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
+        $bytes = $resp.Content.ReadAsByteArrayAsync().Result
+        [System.IO.File]::WriteAllBytes($targetPath, $bytes)
+    } finally { if ($req) { $req.Dispose() }; $client.Dispose() }
+}
+
+function Invoke-S3DeleteFile([string]$endpointUrl, [string]$bucket, [string]$key, [string]$region, [string]$ak, [string]$sk, [bool]$forcePathStyle) {
+    $uri = BuildS3Uri -endpointUrl $endpointUrl -bucket $bucket -key $key -forcePathStyle $forcePathStyle
+    $payloadHash = (Get-HashHex (Get-Bytes ''))
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Delete, $uri)
+        $hdrs = BuildAuthHeaders -method 'DELETE' -uri $uri -region $region -accessKey $ak -secretKey $sk -payloadHash $payloadHash
+        $req.Headers.TryAddWithoutValidation('x-amz-date', $hdrs['x-amz-date']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('Authorization', $hdrs['Authorization']) | Out-Null
+        $req.Headers.TryAddWithoutValidation('x-amz-content-sha256', $hdrs['x-amz-content-sha256']) | Out-Null
+        $resp = $client.SendAsync($req).Result
+        # S3 DELETE is idempotent and returns 204 even if the key never existed; anything else is a real failure.
+        if (-not $resp.IsSuccessStatusCode) { throw "S3 DELETE failed: $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
+    } finally { if ($req) { $req.Dispose() }; $client.Dispose() }
+}
+
+function Get-FileChecksum {
+    param (
+        [string]$Path,
+        [string]$Algorithm = "SHA256"
+    )
+    $hasher = [System.Security.Cryptography.HashAlgorithm]::Create($Algorithm)
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $hashBytes = $hasher.ComputeHash($stream)
+        return [BitConverter]::ToString($hashBytes) -replace '-', ''
+    } finally {
+        $stream.Close()
+        $hasher.Dispose()
+    }
+}
