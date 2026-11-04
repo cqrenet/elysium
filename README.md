@@ -32,21 +32,25 @@ All scripts automatically relaunch under PowerShell 7 (`pwsh`) when it is instal
 Run script Elysium.ps1 as an administrator and choose option 1 (Update Known-Hashes Database).
 The updater now pulls a manifest plus individual hash shards (two-hex prefix layout) from the configured storage (Azure Blob or S3-compatible), verifies checksums, replaces only changed shards, and rebuilds `khdb.txt` for local use. Deleted shards listed in the manifest are removed automatically. When PowerShell 7 is available the downloader automatically fetches up to `-MaxParallelTransfers` shards in parallel (default `5`); on Windows PowerShell 5.1 it reverts to the original sequential behavior. Override the concurrency as needed when running the script directly (for example `.\Update-KHDB.ps1 -MaxParallelTransfers 8`).
 
-To publish an updated shard set (tool provider only), run `tools/Prepare-KHDBStorage.ps1` against your sorted `khdb.txt` (or point it at the directory/list of the Have I Been Pwned `.gz` slices). The helper reconstructs the full 32‑hex NTLM values (prefix + remainder), deduplicates per hash (keeping the largest count), splits by the first two hex characters, writes a manifest (`version`, `sha256`, `size`, entry counts), and can upload the resulting files directly to Azure Blob Storage (via SAS) or S3-compatible endpoints using SigV4. Invalid or malformed entries are omitted automatically, and a short report (aggregate counts + `invalid-hashes.txt`) is produced for review. Example:
+To publish an updated shard set (tool provider only), build the package with `tools/Prepare-KHDBStorage.ps1` and upload it with your storage provider's own CLI. The script runs on any OS with PowerShell 7 (`pwsh`) and needs no Elysium settings or credentials. It takes your sorted `khdb.txt` (or the directory/list of the Have I Been Pwned `.gz` slices), reconstructs the full 32-hex NTLM values (prefix + remainder), deduplicates, splits by the first two hex characters, and writes `manifest.json` (`version`, `shardPrefix`, and `sha256`/`size`/entry count per shard). Invalid or malformed entries are omitted and listed in `invalid-hashes.txt`.
 
 ```powershell
-.\tools\Prepare-KHDBStorage.ps1 -SourcePath .\khdb.txt `
-    -OutputRoot .\publish `
-    -StorageProvider S3 `
-    -S3EndpointUrl https://s3.example.com `
-    -S3BucketName private-khdb `
-    -S3AccessKeyId AKIA... `
-    -S3SecretAccessKey ... `
-    -ManifestRemotePath khdb/manifest.json `
-    -ShardRemotePrefix khdb/shards
+pwsh ./tools/Prepare-KHDBStorage.ps1 -SourcePath ./khdb.txt -OutputRoot ./publish -Force
 ```
 
-Use `-SkipUpload` to stage files locally, or `-StorageProvider Azure` with `storageAccountName`/`containerName`/`sasToken` when targeting Azure Blob Storage. Add `-ShowProgress` (optionally tune `-ProgressUpdateInterval`) if you want a running `Write-Progress` indicator while the hashes are being split. Pass `-ForcePlainText` when your `khdb.txt` already contains complete hashes and you want `.gz` references treated as invalid instead of being expanded. When you only need to push an already prepared package, combine `-UploadOnly` with `-OutputRoot` pointing at the existing shard directory and choose the storage provider to perform an upload-only run. Missing storage values are pulled from `ElysiumSettings.txt` automatically (override the path with `-SettingsPath`) so you don’t have to retype S3/Azure credentials for every run. On PowerShell 7, `Prepare-KHDBStorage.ps1` can push shards concurrently by setting `-MaxParallelTransfers` (default `5`); Windows PowerShell 5.1 automatically falls back to serial uploads.
+Upload the shards first and `manifest.json` last, so a client never downloads a manifest that points at shards that are not there yet. The remote paths must match `-ShardRemotePrefix` (default `khdb/shards`, recorded in the manifest) and the clients' `KhdbManifestPath` (default `khdb/manifest.json`):
+
+```sh
+# S3-compatible, with the AWS CLI (rclone sync/copyto against an S3 remote works the same way)
+aws s3 sync ./publish/shards s3://BUCKET/khdb/shards --endpoint-url https://s3.example.com
+aws s3 cp   ./publish/manifest.json s3://BUCKET/khdb/manifest.json --endpoint-url https://s3.example.com
+
+# Azure Blob Storage, with azcopy and a SAS that allows write
+azcopy sync ./publish/shards "https://ACCOUNT.blob.core.windows.net/CONTAINER/khdb/shards?SAS"
+azcopy copy ./publish/manifest.json "https://ACCOUNT.blob.core.windows.net/CONTAINER/khdb/manifest.json?SAS"
+```
+
+Shard names are stable (`00.txt` ... `ff.txt` with the default `-ShardSize 2`), so no remote deletion step is needed. Add `-ShowProgress` (optionally tune `-ProgressUpdateInterval`) for a running `Write-Progress` indicator while the hashes are being split. Pass `-ForcePlainText` when your `khdb.txt` already contains complete hashes and you want `.gz` references treated as invalid instead of being expanded.
 
 Every run also emits a cleaned, DSInternals-friendly `khdb-clean.txt` beside the shards so you can inspect or distribute the merged list before publishing.
 

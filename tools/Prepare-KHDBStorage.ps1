@@ -15,9 +15,14 @@
 Prepares sharded KHDB content for remote storage.
 
 .DESCRIPTION
-Splits a monolithic khdb.txt into two-hex prefix shards, generates a manifest
-compatible with Update-KHDB.ps1, and optionally uploads both manifest and shards
-to Azure Blob Storage or an S3-compatible bucket.
+Provider-side tool. Splits a KHDB source (a sorted khdb.txt, or a directory/list of
+Have I Been Pwned .gz slices) into hash-prefix shards and writes manifest.json with the
+SHA-256 and size of every shard, in the layout Update-ElysiumKhdb downloads. Invalid
+lines go to invalid-hashes.txt; khdb-clean.txt holds the merged, cleaned list.
+
+It does not upload. Publish the package with the storage provider's own CLI, shards
+first and manifest.json last, so clients never see a manifest that points at shards
+that are not there yet (see the README for aws s3 / rclone / azcopy commands).
 #>
 
 [CmdletBinding()]
@@ -33,57 +38,24 @@ param(
 
     [string]$ManifestVersion,
 
-    [ValidateSet('None', 'Azure', 'S3')]
-    [string]$StorageProvider = 'None',
-
-    # Azure options
-    [string]$StorageAccountName,
-    [string]$ContainerName,
-    [string]$SasToken,
-
-    # S3-compatible options
-    [string]$S3EndpointUrl,
-    [string]$S3Region = 'us-east-1',
-    [string]$S3BucketName,
-    [string]$S3AccessKeyId,
-    [string]$S3SecretAccessKey,
-    [bool]$S3ForcePathStyle = $true,
-
-    # Remote layout
-    [string]$ManifestRemotePath = 'khdb/manifest.json',
+    # Where the shards will live in the bucket/container; written into the manifest so clients
+    # know where to fetch them from. Upload the shards to this same path.
     [string]$ShardRemotePrefix = 'khdb/shards',
-
-    [switch]$SkipUpload,
-    [switch]$UploadOnly,
 
     [switch]$ShowProgress,
     [int]$ProgressUpdateInterval = 100000,
-
-    [ValidateRange(1, 64)]
-    [int]$MaxParallelTransfers = 5,
 
     [switch]$ForcePlainText,
 
     [string]$CheckpointPath,
     [switch]$NoCheckpoint,
 
-    [switch]$Force,
-
-    [string]$SettingsPath
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-# Provider-side tool in tools/; the shared helpers and default settings live in the repo root.
-$repoRoot = Split-Path -Path $PSScriptRoot -Parent
-[string]$commonHelper = Join-Path -Path $repoRoot -ChildPath 'Elysium.Common.ps1'
-if (-not (Test-Path -LiteralPath $commonHelper)) { throw "Common helper not found at $commonHelper" }
-. $commonHelper
-Restart-WithPwshIfAvailable -BoundParameters $PSBoundParameters -UnboundArguments $MyInvocation.UnboundArguments
-
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
 
 function Ensure-Directory {
     param([string]$Path)
@@ -137,83 +109,6 @@ function Get-NormalizedForwardPath {
     param([string]$PathValue)
     if ([string]::IsNullOrWhiteSpace($PathValue)) { return '' }
     return $PathValue.Replace('\', '/').Trim('/')
-}
-
-function Upload-AzureBlob {
-    param(
-        [string]$Account,
-        [string]$Container,
-        [string]$Sas,
-        [string]$BlobName,
-        [string]$FilePath,
-        [string]$ContentType
-    )
-
-    $uri = Build-BlobUri -Account $Account -Container $Container -Sas $Sas -BlobName $BlobName
-    $request = $null
-    $stream = $null
-    $client = [System.Net.Http.HttpClient]::new()
-    try {
-        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, $uri)
-        $stream = [System.IO.File]::OpenRead($FilePath)
-        $content = New-Object System.Net.Http.StreamContent($stream)
-        if ([string]::IsNullOrWhiteSpace($ContentType)) {
-            $ContentType = 'application/octet-stream'
-        }
-        $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse($ContentType)
-        $request.Content = $content
-        $request.Headers.TryAddWithoutValidation('x-ms-blob-type', 'BlockBlob') | Out-Null
-        $request.Headers.TryAddWithoutValidation('x-ms-version', '2020-10-02') | Out-Null
-
-        $response = $client.SendAsync($request).GetAwaiter().GetResult()
-        $null = $response.EnsureSuccessStatusCode()
-    } finally {
-        if ($stream) { $stream.Dispose() }
-        if ($request) { $request.Dispose() }
-        if ($client) { $client.Dispose() }
-    }
-}
-
-function Invoke-S3HttpUpload {
-    param(
-        [string]$EndpointUrl,
-        [string]$Bucket,
-        [string]$Key,
-        [string]$FilePath,
-        [string]$Region,
-        [string]$AccessKeyId,
-        [string]$SecretAccessKey,
-        [bool]$ForcePathStyle,
-        [string]$PayloadHash,
-        [string]$ContentType
-    )
-
-    $uri = BuildS3Uri -endpointUrl $EndpointUrl -bucket $Bucket -key $Key -forcePathStyle $ForcePathStyle
-    $headers = BuildAuthHeaders -method 'PUT' -uri $uri -region $Region -accessKey $AccessKeyId -secretKey $SecretAccessKey -payloadHash $PayloadHash
-
-    $client = [System.Net.Http.HttpClient]::new()
-    $request = $null
-    $stream = $null
-    try {
-        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, $uri)
-        foreach ($kvp in $headers.GetEnumerator()) {
-            $request.Headers.TryAddWithoutValidation($kvp.Key, $kvp.Value) | Out-Null
-        }
-        $stream = [System.IO.File]::OpenRead($FilePath)
-        $content = New-Object System.Net.Http.StreamContent($stream)
-        if ([string]::IsNullOrWhiteSpace($ContentType)) {
-            $ContentType = 'application/octet-stream'
-        }
-        $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse($ContentType)
-        $request.Content = $content
-
-        $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-        $null = $response.EnsureSuccessStatusCode()
-    } finally {
-        if ($stream) { $stream.Dispose() }
-        if ($request) { $request.Dispose() }
-        if ($client) { $client.Dispose() }
-    }
 }
 
 function Split-KhdbIntoShards {
@@ -711,148 +606,14 @@ function Write-JsonFile {
     [System.IO.File]::WriteAllText($Path, $json, $encoding)
 }
 
-$resolvedSettingsPath = $null
-$elysiumSettings = $null
-if ($SettingsPath) {
-    if (-not (Test-Path -LiteralPath $SettingsPath)) {
-        throw "Settings file not found at $SettingsPath"
-    }
-    $resolvedSettingsPath = (Resolve-Path -LiteralPath $SettingsPath).Path
-} else {
-    $defaultSettingsCandidate = Join-Path -Path $repoRoot -ChildPath 'ElysiumSettings.txt'
-    if (Test-Path -LiteralPath $defaultSettingsCandidate) {
-        $resolvedSettingsPath = (Resolve-Path -LiteralPath $defaultSettingsCandidate).Path
-    }
-}
-if ($resolvedSettingsPath) {
-    try {
-        $elysiumSettings = Read-KeyValueSettingsFile -Path $resolvedSettingsPath
-    } catch {
-        throw "Failed to parse settings file '$resolvedSettingsPath': $($_.Exception.Message)"
-    }
-}
-
-$psSupportsParallel = ($PSVersionTable.PSVersion.Major -ge 7)
-$effectiveParallelTransfers = if ($MaxParallelTransfers -lt 1) { 1 } else { [int]$MaxParallelTransfers }
-$parallelTransfersEnabled = $psSupportsParallel -and $effectiveParallelTransfers -gt 1
-if (-not $psSupportsParallel -and $effectiveParallelTransfers -gt 1) {
-    Write-Verbose "Parallel transfers requested but PowerShell $($PSVersionTable.PSVersion) does not support ForEach-Object -Parallel; using serial mode."
-}
-$parallelAzureUploadHelpers = $null
-$parallelAzureUploadHelperList = @()
-$parallelS3UploadHelpers = $null
-$parallelS3UploadHelperList = @()
-if ($parallelTransfersEnabled) {
-    $parallelAzureUploadHelpers = @{
-        'Build-BlobUri'    = Get-FunctionDefinitionText 'Build-BlobUri'
-        'Upload-AzureBlob' = Get-FunctionDefinitionText 'Upload-AzureBlob'
-    }
-    $parallelAzureUploadHelperList = $parallelAzureUploadHelpers.GetEnumerator() | ForEach-Object {
-        [pscustomobject]@{ Name = $_.Key; Definition = $_.Value }
-    }
-    $parallelS3UploadHelpers = @{}
-    @(
-        'Get-Bytes',
-        'Get-HashHex',
-        'HmacSha256',
-        'ToHex',
-        'GetSignatureKey',
-        'UriEncode',
-        'BuildCanonicalPath',
-        'BuildAuthHeaders',
-        'BuildS3Uri',
-        'Invoke-S3HttpUpload'
-    ) | ForEach-Object {
-        $parallelS3UploadHelpers[$_] = Get-FunctionDefinitionText $_
-    }
-    $parallelS3UploadHelperList = $parallelS3UploadHelpers.GetEnumerator() | ForEach-Object {
-        [pscustomobject]@{ Name = $_.Key; Definition = $_.Value }
-    }
-}
-
-# Apply defaults from settings when caller did not specify overrides
-if ($elysiumSettings) {
-    if (-not $PSBoundParameters.ContainsKey('StorageProvider')) {
-        $providerFromSettings = Get-SettingsValue -Settings $elysiumSettings -Key 'StorageProvider'
-        if ($providerFromSettings) { $StorageProvider = $providerFromSettings }
-    }
-    if (-not $PSBoundParameters.ContainsKey('ManifestVersion')) {
-        $manifestFromSettings = Get-SettingsValue -Settings $elysiumSettings -Key 'ManifestVersion'
-        if ($manifestFromSettings) { $ManifestVersion = $manifestFromSettings }
-    }
-
-    $providerUpper = if ($StorageProvider) { $StorageProvider.ToUpperInvariant() } else { 'NONE' }
-    if ($providerUpper -eq 'AZURE') {
-        if (-not $PSBoundParameters.ContainsKey('StorageAccountName')) {
-            $storageAccountSetting = Get-SettingsValue -Settings $elysiumSettings -Key 'storageAccountName'
-            if ($storageAccountSetting) { $StorageAccountName = $storageAccountSetting }
-        }
-        if (-not $PSBoundParameters.ContainsKey('ContainerName')) {
-            $containerSetting = Get-SettingsValue -Settings $elysiumSettings -Key 'containerName'
-            if ($containerSetting) { $ContainerName = $containerSetting }
-        }
-        if (-not $PSBoundParameters.ContainsKey('SasToken')) {
-            $sasSetting = Get-SettingsValue -Settings $elysiumSettings -Key 'sasToken'
-            if ($sasSetting) { $SasToken = $sasSetting }
-        }
-    } elseif ($providerUpper -eq 'S3') {
-        if (-not $PSBoundParameters.ContainsKey('S3EndpointUrl')) {
-            $endpointSetting = Get-SettingsValue -Settings $elysiumSettings -Key 's3EndpointUrl'
-            if ($endpointSetting) { $S3EndpointUrl = $endpointSetting }
-        }
-        if (-not $PSBoundParameters.ContainsKey('S3BucketName')) {
-            $bucketSetting = Get-SettingsValue -Settings $elysiumSettings -Key 's3BucketName'
-            if ($bucketSetting) { $S3BucketName = $bucketSetting }
-        }
-        if (-not $PSBoundParameters.ContainsKey('S3AccessKeyId')) {
-            $accessKeySetting = Get-SettingsValue -Settings $elysiumSettings -Key 's3AccessKeyId'
-            if ($accessKeySetting) { $S3AccessKeyId = $accessKeySetting }
-        }
-        if (-not $PSBoundParameters.ContainsKey('S3SecretAccessKey')) {
-            $secretKeySetting = Get-SettingsValue -Settings $elysiumSettings -Key 's3SecretAccessKey'
-            if ($secretKeySetting) { $S3SecretAccessKey = $secretKeySetting }
-        }
-        if (-not $PSBoundParameters.ContainsKey('S3Region')) {
-            $regionSetting = Get-SettingsValue -Settings $elysiumSettings -Key 's3Region'
-            if ($regionSetting) { $S3Region = $regionSetting }
-        }
-        if (-not $PSBoundParameters.ContainsKey('S3ForcePathStyle')) {
-            $forcePathStyleSetting = Get-SettingsValue -Settings $elysiumSettings -Key 's3ForcePathStyle'
-            if ($forcePathStyleSetting) {
-                try { $S3ForcePathStyle = [System.Convert]::ToBoolean($forcePathStyleSetting) } catch {}
-            }
-        }
-    }
-}
-
 # -- Argument validation ------------------------------------------------------
 
-$resolvedSource = $null
-if (-not $UploadOnly) {
-    $resolvedSource = Resolve-Path -LiteralPath $SourcePath -ErrorAction Stop
-    if (-not (Test-Path -LiteralPath $resolvedSource)) {
-        throw "Source file not found at $SourcePath"
-    }
+$resolvedSource = Resolve-Path -LiteralPath $SourcePath -ErrorAction Stop
+if (-not (Test-Path -LiteralPath $resolvedSource)) {
+    throw "Source file not found at $SourcePath"
 }
-
-if ($UploadOnly -and $SkipUpload) {
-    throw '-UploadOnly cannot be combined with -SkipUpload.'
-}
-if ($UploadOnly -and $StorageProvider -eq 'None') {
-    throw "-UploadOnly requires StorageProvider Azure or S3 so there is an upload to perform."
-}
-
-if ($UploadOnly) {
-    if (-not $OutputRoot) {
-        throw '-OutputRoot must be specified when using -UploadOnly.'
-    }
-    $resolvedOutputRoot = Resolve-Path -LiteralPath $OutputRoot -ErrorAction Stop
-    $OutputRoot = $resolvedOutputRoot.Path
-} else {
-    if (-not $OutputRoot) {
-        $defaultRoot = Join-Path -Path (Split-Path -Parent $resolvedSource.Path) -ChildPath 'khdb-package'
-        $OutputRoot = $defaultRoot
-    }
+if (-not $OutputRoot) {
+    $OutputRoot = Join-Path -Path (Split-Path -Parent $resolvedSource.Path) -ChildPath 'khdb-package'
 }
 
 $manifestObject = $null
@@ -873,318 +634,136 @@ $resume = $false
 $resumeState = $null
 $resolvedCheckpointPath = $null
 
-if ($UploadOnly) {
-    if (-not (Test-Path -LiteralPath $localShardRoot)) {
-        throw "UploadOnly requested but shard directory '$localShardRoot' was not found."
-    }
-    if (-not (Test-Path -LiteralPath $manifestPath)) {
-        throw "UploadOnly requested but manifest '$manifestPath' does not exist."
-    }
-
-    try {
-        $manifestObject = (Get-Content -LiteralPath $manifestPath -Encoding UTF8 -Raw) | ConvertFrom-Json
-    } catch {
-        throw "Failed to parse manifest '$manifestPath': $($_.Exception.Message)"
-    }
-    if (-not $manifestObject) {
-        throw "Manifest '$manifestPath' is empty or invalid."
-    }
-    if (-not $manifestObject.shards -or $manifestObject.shards.Count -eq 0) {
-        throw "Manifest '$manifestPath' does not contain shard metadata."
-    }
-
-    $manifestHash = (Get-FileHash -Path $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-
-    $resolvedLocalShardRoot = [System.IO.Path]::GetFullPath($localShardRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-
-    $manifestShards = @()
-    $totalSizeBytes = 0L
-    foreach ($entry in ($manifestObject.shards | Sort-Object name)) {
-        $name = [string]$entry.name
-        if ([string]::IsNullOrWhiteSpace($name)) { continue }
-        $localPath = Join-Path -Path $localShardRoot -ChildPath $name
-        # Manifest shard names are attacker-controllable if manifest.json was tampered with (requires
-        # prior local write access to the shard directory). Reject anything that resolves outside the
-        # shard root instead of trusting Join-Path to keep '..'/rooted paths contained.
-        $resolvedLocalPath = [System.IO.Path]::GetFullPath($localPath)
-        if (-not $resolvedLocalPath.StartsWith($resolvedLocalShardRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Manifest shard name '$name' resolves outside the shard directory '$localShardRoot'."
+if (-not $NoCheckpoint) {
+    if (-not $ForcePlainText) {
+        Write-Warning 'Checkpointing is only available with -ForcePlainText; continuing without checkpoints.'
+    } else {
+        if (-not $CheckpointPath) {
+            $CheckpointPath = Join-Path -Path $OutputRoot -ChildPath 'khdb.checkpoint.json'
         }
-        if (-not (Test-Path -LiteralPath $localPath)) {
-            throw "Shard file '$name' listed in manifest was not found under '$localShardRoot'."
+        $resolvedCheckpointPath = [System.IO.Path]::GetFullPath($CheckpointPath)
+        $checkpointDirectory = Split-Path -Path $resolvedCheckpointPath -Parent
+        if ($checkpointDirectory -and -not (Test-Path -LiteralPath $checkpointDirectory)) {
+            [System.IO.Directory]::CreateDirectory($checkpointDirectory) | Out-Null
         }
-        $fileInfo = Get-Item -LiteralPath $localPath
-        $totalSizeBytes += $fileInfo.Length
-        $manifestShards += [pscustomobject]@{
-            name    = $name
-            prefix  = [string]$entry.prefix
-            entries = if ($entry.entries -ne $null) { [long]$entry.entries } else { 0L }
-            size    = [string]$fileInfo.Length
-            sha256  = if ($entry.sha256) { [string]$entry.sha256.ToLowerInvariant() } else { '' }
+        if (Test-Path -LiteralPath $resolvedCheckpointPath) {
+            try {
+                $resumeState = (Get-Content -LiteralPath $resolvedCheckpointPath -Encoding UTF8 -Raw) | ConvertFrom-Json
+            } catch {
+                throw "Failed to parse checkpoint '$resolvedCheckpointPath': $($_.Exception.Message)"
+            }
+            if (-not $resumeState) { throw "Checkpoint '$resolvedCheckpointPath' is empty or invalid." }
+            if ($resumeState.version -and $resumeState.version -ne 1) { throw "Unsupported checkpoint version $($resumeState.version)." }
+            $resume = $true
+        }
+        $checkpointEnabled = $true
+    }
+}
+
+if ($resume -and $resumeState -and $resumeState.sourcePath) {
+    $resumeSourcePath = [System.IO.Path]::GetFullPath([string]$resumeState.sourcePath)
+    if ($resumeSourcePath -ne $resolvedSource.Path) {
+        throw "Checkpoint source '$resumeSourcePath' does not match current source '$($resolvedSource.Path)'."
+    }
+}
+
+if (Test-Path -LiteralPath $OutputRoot) {
+    $startingFresh = -not $resume
+    if ($startingFresh) {
+        if (-not $Force) {
+            $existing = Get-ChildItem -LiteralPath $OutputRoot -Force | Select-Object -First 1
+            if ($existing) {
+                throw "Output root '$OutputRoot' already exists and is not empty. Use -Force to overwrite."
+            }
+        } else {
+            Remove-DirectoryContents -Path $OutputRoot
         }
     }
-    if ($manifestShards.Count -eq 0) {
-        throw "Manifest '$manifestPath' did not produce any shard records to upload."
-    }
-
-    $totalEntries = if ($manifestObject.totalEntries) { [long]$manifestObject.totalEntries } else { 0L }
-    $totalLines = if ($manifestObject.inputLines) { [long]$manifestObject.inputLines } else { 0L }
-    $invalidCount = if ($manifestObject.invalidEntries) { [long]$manifestObject.invalidEntries } else { 0L }
-    $skippedCount = if ($manifestObject.skippedEntries) { [long]$manifestObject.skippedEntries } else { 0L }
-
-    $normalizedShardPrefix = Get-NormalizedForwardPath -PathValue $ShardRemotePrefix
-    $manifestShardPrefix = Get-NormalizedForwardPath -PathValue $manifestObject.shardPrefix
-    if ($manifestShardPrefix -and $normalizedShardPrefix -and $manifestShardPrefix -ne $normalizedShardPrefix) {
-        Write-Warning ("ShardRemotePrefix '{0}' does not match manifest shardPrefix '{1}'; using manifest value." -f $normalizedShardPrefix, $manifestShardPrefix)
-    }
-    if ($manifestShardPrefix) {
-        $normalizedShardPrefix = $manifestShardPrefix
-    }
-
-    Write-Host "UploadOnly requested; reusing existing artifacts under '$OutputRoot'."
-    Write-Host ("Manifest SHA256: {0}" -f $manifestHash)
-
-    $summaryMessage = ("Summary: {0} shards, {1} valid hashes, {2} invalid entries, {3} skipped, {4:N0} bytes." -f $manifestShards.Count, $totalEntries, $invalidCount, $skippedCount, $totalSizeBytes)
 } else {
-    if (-not $NoCheckpoint) {
-        if (-not $ForcePlainText) {
-            Write-Warning 'Checkpointing is only available with -ForcePlainText; continuing without checkpoints.'
-        } else {
-            if (-not $CheckpointPath) {
-                $CheckpointPath = Join-Path -Path $OutputRoot -ChildPath 'khdb.checkpoint.json'
-            }
-            $resolvedCheckpointPath = [System.IO.Path]::GetFullPath($CheckpointPath)
-            $checkpointDirectory = Split-Path -Path $resolvedCheckpointPath -Parent
-            if ($checkpointDirectory -and -not (Test-Path -LiteralPath $checkpointDirectory)) {
-                [System.IO.Directory]::CreateDirectory($checkpointDirectory) | Out-Null
-            }
-            if (Test-Path -LiteralPath $resolvedCheckpointPath) {
-                try {
-                    $resumeState = (Get-Content -LiteralPath $resolvedCheckpointPath -Encoding UTF8 -Raw) | ConvertFrom-Json
-                } catch {
-                    throw "Failed to parse checkpoint '$resolvedCheckpointPath': $($_.Exception.Message)"
-                }
-                if (-not $resumeState) { throw "Checkpoint '$resolvedCheckpointPath' is empty or invalid." }
-                if ($resumeState.version -and $resumeState.version -ne 1) { throw "Unsupported checkpoint version $($resumeState.version)." }
-                $resume = $true
-            }
-            $checkpointEnabled = $true
-        }
-    }
-
-    if ($resume -and $resumeState -and $resumeState.sourcePath) {
-        $resumeSourcePath = [System.IO.Path]::GetFullPath([string]$resumeState.sourcePath)
-        if ($resumeSourcePath -ne $resolvedSource.Path) {
-            throw "Checkpoint source '$resumeSourcePath' does not match current source '$($resolvedSource.Path)'."
-        }
-    }
-
-    if (Test-Path -LiteralPath $OutputRoot) {
-        $startingFresh = -not $resume
-        if ($startingFresh) {
-            if (-not $Force) {
-                $existing = Get-ChildItem -LiteralPath $OutputRoot -Force | Select-Object -First 1
-                if ($existing) {
-                    throw "Output root '$OutputRoot' already exists and is not empty. Use -Force to overwrite."
-                }
-            } else {
-                Remove-DirectoryContents -Path $OutputRoot
-            }
-        }
-    } else {
-        Ensure-Directory $OutputRoot
-    }
-
-    Ensure-Directory $localShardRoot
-
-    $invalidReportPath = Join-Path -Path $OutputRoot -ChildPath 'invalid-hashes.txt'
-    if (-not $resume -and (Test-Path -LiteralPath $invalidReportPath)) { Remove-Item -LiteralPath $invalidReportPath -Force }
-
-    Write-Host "Splitting '$($resolvedSource.Path)' into shard prefix length $ShardSize..."
-    $splitResult = Split-KhdbIntoShards -Source $resolvedSource.Path -ShardRoot $localShardRoot -PrefixLength $ShardSize -InvalidOutputPath $invalidReportPath -ShowProgress:$ShowProgress -ProgressUpdateInterval $ProgressUpdateInterval -ProgressActivity 'Preparing KHDB shards' -ForcePlainText:$ForcePlainText -EnableCheckpoint:$checkpointEnabled -CheckpointPath $resolvedCheckpointPath -Resume:$resume -ResumeState $resumeState
-    $totalEntries = [long]$splitResult.TotalEntries
-    $totalLines = [long]$splitResult.TotalLines
-    $invalidCount = [long]$splitResult.InvalidLines
-    $skippedCount = [long]$splitResult.SkippedLines
-    Write-Host ("Input summary: {0} non-empty line(s) -> {1} valid hash(es), {2} invalid entr(y/ies), {3} skipped." -f $totalLines, $totalEntries, $invalidCount, $skippedCount)
-    if ([long]$splitResult.LegacyCount -gt 0) {
-        Write-Warning ("Detected {0} legacy HASH:count entries. Output shards and khdb-clean.txt were normalized to hash-only lines for DSInternals compatibility." -f [long]$splitResult.LegacyCount)
-    }
-    if ($invalidCount -gt 0) {
-        if ($splitResult.InvalidOutputPath) {
-            Write-Warning ("Invalid lines saved to {0}" -f $splitResult.InvalidOutputPath)
-        }
-        if ($splitResult.InvalidSamples -and $splitResult.InvalidSamples.Count -gt 0) {
-            Write-Warning "Sample invalid lines:"
-            foreach ($sample in $splitResult.InvalidSamples) {
-                Write-Warning ("  {0}" -f $sample)
-            }
-        }
-    } elseif (-not $resume -and (Test-Path -LiteralPath $invalidReportPath)) {
-        Remove-Item -LiteralPath $invalidReportPath -Force
-    }
-
-    $manifestShards = @()
-    $totalSizeBytes = 0L
-
-    foreach ($prefix in ($splitResult.ShardStats.Keys | Sort-Object)) {
-        $info = $splitResult.ShardStats[$prefix]
-        $fileInfo = Get-Item -LiteralPath $info.Path
-        $totalSizeBytes += $fileInfo.Length
-        $hash = (Get-FileHash -Path $info.Path -Algorithm SHA256).Hash.ToLowerInvariant()
-        $manifestShards += [pscustomobject]@{
-            name    = "$prefix.txt"
-            prefix  = $prefix
-            entries = $info.Count
-            size    = [string]$fileInfo.Length
-            sha256  = $hash
-        }
-    }
-
-    $manifestVersionValue = if ([string]::IsNullOrWhiteSpace($ManifestVersion)) {
-        (Get-Date).ToString('yyyyMMdd-HHmmss')
-    } else {
-        $ManifestVersion
-    }
-
-    $normalizedShardPrefix = Get-NormalizedForwardPath -PathValue $ShardRemotePrefix
-    $manifestObject = [ordered]@{
-        version        = $manifestVersionValue
-        generatedAt    = (Get-Date).ToUniversalTime().ToString('o')
-        shardSize      = $ShardSize
-        shardPrefix    = $normalizedShardPrefix
-        totalEntries   = $totalEntries
-        inputLines     = $totalLines
-        invalidEntries = $invalidCount
-        skippedEntries = $skippedCount
-        totalShards    = $manifestShards.Count
-        totalSize      = [string]$totalSizeBytes
-        shards         = $manifestShards
-    }
-
-    Write-Host ("Writing manifest to {0}" -f $manifestPath)
-    Write-JsonFile -Path $manifestPath -Data $manifestObject
-    $manifestHash = (Get-FileHash -Path $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-
-    Write-Host ("Manifest SHA256: {0}" -f $manifestHash)
-    $cleanCombinedPath = Join-Path -Path $OutputRoot -ChildPath 'khdb-clean.txt'
-    Write-Host ("Writing cleaned aggregate to {0}..." -f $cleanCombinedPath)
-    Merge-ShardsToFile -Manifest $manifestObject -ShardsRoot $localShardRoot -TargetPath $cleanCombinedPath
-    $cleanHash = (Get-FileHash -Path $cleanCombinedPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    Write-Host ("Clean KHDB SHA256: {0}" -f $cleanHash)
-    $summaryMessage = ("Summary: {0} shards, {1} valid hashes, {2} invalid entries, {3} skipped, {4:N0} bytes." -f $manifestShards.Count, $totalEntries, $invalidCount, $skippedCount, $totalSizeBytes)
+    Ensure-Directory $OutputRoot
 }
 
-$normalizedManifestRemote = Get-NormalizedForwardPath -PathValue $ManifestRemotePath
-if ([string]::IsNullOrEmpty($normalizedManifestRemote)) {
-    throw 'ManifestRemotePath cannot be empty.'
+Ensure-Directory $localShardRoot
+
+$invalidReportPath = Join-Path -Path $OutputRoot -ChildPath 'invalid-hashes.txt'
+if (-not $resume -and (Test-Path -LiteralPath $invalidReportPath)) { Remove-Item -LiteralPath $invalidReportPath -Force }
+
+Write-Host "Splitting '$($resolvedSource.Path)' into shard prefix length $ShardSize..."
+$splitResult = Split-KhdbIntoShards -Source $resolvedSource.Path -ShardRoot $localShardRoot -PrefixLength $ShardSize -InvalidOutputPath $invalidReportPath -ShowProgress:$ShowProgress -ProgressUpdateInterval $ProgressUpdateInterval -ProgressActivity 'Preparing KHDB shards' -ForcePlainText:$ForcePlainText -EnableCheckpoint:$checkpointEnabled -CheckpointPath $resolvedCheckpointPath -Resume:$resume -ResumeState $resumeState
+$totalEntries = [long]$splitResult.TotalEntries
+$totalLines = [long]$splitResult.TotalLines
+$invalidCount = [long]$splitResult.InvalidLines
+$skippedCount = [long]$splitResult.SkippedLines
+Write-Host ("Input summary: {0} non-empty line(s) -> {1} valid hash(es), {2} invalid entr(y/ies), {3} skipped." -f $totalLines, $totalEntries, $invalidCount, $skippedCount)
+if ([long]$splitResult.LegacyCount -gt 0) {
+    Write-Warning ("Detected {0} legacy HASH:count entries. Output shards and khdb-clean.txt were normalized to hash-only lines for DSInternals compatibility." -f [long]$splitResult.LegacyCount)
+}
+if ($invalidCount -gt 0) {
+    if ($splitResult.InvalidOutputPath) {
+        Write-Warning ("Invalid lines saved to {0}" -f $splitResult.InvalidOutputPath)
+    }
+    if ($splitResult.InvalidSamples -and $splitResult.InvalidSamples.Count -gt 0) {
+        Write-Warning "Sample invalid lines:"
+        foreach ($sample in $splitResult.InvalidSamples) {
+            Write-Warning ("  {0}" -f $sample)
+        }
+    }
+} elseif (-not $resume -and (Test-Path -LiteralPath $invalidReportPath)) {
+    Remove-Item -LiteralPath $invalidReportPath -Force
 }
 
-if (-not $UploadOnly) {
-    if ($SkipUpload) {
-        Write-Host "SkipUpload requested; files ready under '$OutputRoot'."
-        Write-Host $summaryMessage
-        if ($checkpointEnabled -and $resolvedCheckpointPath -and (Test-Path -LiteralPath $resolvedCheckpointPath)) {
-            Remove-Item -LiteralPath $resolvedCheckpointPath -Force
-        }
-        return
-    }
-}
-elseif ($SkipUpload) {
-    # Should never hit due to earlier validation, but guard defensively.
-    return
-}
+$manifestShards = @()
+$totalSizeBytes = 0L
 
-switch ($StorageProvider.ToUpperInvariant()) {
-    'AZURE' {
-        if ([string]::IsNullOrWhiteSpace($StorageAccountName)) { throw 'storageAccountName is required for Azure uploads.' }
-        if ([string]::IsNullOrWhiteSpace($ContainerName)) { throw 'containerName is required for Azure uploads.' }
-        if ([string]::IsNullOrWhiteSpace($SasToken)) { throw 'sasToken is required for Azure uploads.' }
-
-        if ($parallelTransfersEnabled) {
-            Write-Host ("Uploading shards to Azure Blob Storage container '{0}' with up to {1} concurrent transfer(s)..." -f $ContainerName, $effectiveParallelTransfers)
-            $prefixForParallelUpload = if ([string]::IsNullOrWhiteSpace($normalizedShardPrefix)) { $null } else { $normalizedShardPrefix.Replace('\', '/').Trim('/') }
-            $manifestShards | ForEach-Object -Parallel {
-                param($entry)
-                try {
-                    foreach ($helper in $using:parallelAzureUploadHelperList) {
-                        if (-not (Get-Command $helper.Name -ErrorAction SilentlyContinue)) {
-                            Invoke-Expression $helper.Definition
-                        }
-                    }
-                    $localPath = Join-Path -Path $using:localShardRoot -ChildPath $entry.name
-                    $remoteKey = $entry.name.Replace('\', '/').TrimStart('/')
-                    if (-not [string]::IsNullOrWhiteSpace($using:prefixForParallelUpload)) {
-                        $remoteKey = $using:prefixForParallelUpload + '/' + $remoteKey
-                    }
-                    Upload-AzureBlob -Account $using:StorageAccountName -Container $using:ContainerName -Sas $using:SasToken -BlobName $remoteKey -FilePath $localPath -ContentType 'text/plain'
-                    Write-Host (" -> {0}" -f $remoteKey)
-                } catch {
-                    throw ("Shard '{0}': {1}" -f $entry.name, $_.Exception.Message)
-                }
-            } -ThrottleLimit $effectiveParallelTransfers
-        } else {
-            Write-Host "Uploading shards to Azure Blob Storage container '$ContainerName'..."
-            foreach ($entry in $manifestShards) {
-                $localPath = Join-Path -Path $localShardRoot -ChildPath $entry.name
-                $remoteKey = Combine-StoragePath -Prefix $normalizedShardPrefix -Name $entry.name
-                Write-Host (" -> {0}" -f $remoteKey)
-                Upload-AzureBlob -Account $StorageAccountName -Container $ContainerName -Sas $SasToken -BlobName $remoteKey -FilePath $localPath -ContentType 'text/plain'
-            }
-        }
-
-        Write-Host ("Uploading manifest to {0}" -f $normalizedManifestRemote)
-        Upload-AzureBlob -Account $StorageAccountName -Container $ContainerName -Sas $SasToken -BlobName $normalizedManifestRemote -FilePath $manifestPath -ContentType 'application/json'
-    }
-    'S3' {
-        if ([string]::IsNullOrWhiteSpace($S3EndpointUrl)) { throw 's3EndpointUrl is required for S3 uploads.' }
-        if ([string]::IsNullOrWhiteSpace($S3BucketName)) { throw 's3BucketName is required for S3 uploads.' }
-        if ([string]::IsNullOrWhiteSpace($S3AccessKeyId) -or [string]::IsNullOrWhiteSpace($S3SecretAccessKey)) {
-            throw 's3AccessKeyId and s3SecretAccessKey are required for S3 uploads.'
-        }
-
-        if ($parallelTransfersEnabled) {
-            Write-Host ("Uploading shards to S3 bucket '{0}' with up to {1} concurrent transfer(s)..." -f $S3BucketName, $effectiveParallelTransfers)
-            $prefixForParallelUpload = if ([string]::IsNullOrWhiteSpace($normalizedShardPrefix)) { $null } else { $normalizedShardPrefix.Replace('\', '/').Trim('/') }
-            $manifestShards | ForEach-Object -Parallel {
-                param($entry)
-                try {
-                    foreach ($helper in $using:parallelS3UploadHelperList) {
-                        if (-not (Get-Command $helper.Name -ErrorAction SilentlyContinue)) {
-                            Invoke-Expression $helper.Definition
-                        }
-                    }
-                    $localPath = Join-Path -Path $using:localShardRoot -ChildPath $entry.name
-                    $remoteKey = $entry.name.Replace('\', '/').TrimStart('/')
-                    if (-not [string]::IsNullOrWhiteSpace($using:prefixForParallelUpload)) {
-                        $remoteKey = $using:prefixForParallelUpload + '/' + $remoteKey
-                    }
-                    Invoke-S3HttpUpload -EndpointUrl $using:S3EndpointUrl -Bucket $using:S3BucketName -Key $remoteKey -FilePath $localPath -Region $using:S3Region -AccessKeyId $using:S3AccessKeyId -SecretAccessKey $using:S3SecretAccessKey -ForcePathStyle $using:S3ForcePathStyle -PayloadHash $entry.sha256 -ContentType 'text/plain'
-                    Write-Host (" -> {0}" -f $remoteKey)
-                } catch {
-                    throw ("Shard '{0}': {1}" -f $entry.name, $_.Exception.Message)
-                }
-            } -ThrottleLimit $effectiveParallelTransfers
-        } else {
-            Write-Host "Uploading shards to S3 bucket '$S3BucketName'..."
-            foreach ($entry in $manifestShards) {
-                $localPath = Join-Path -Path $localShardRoot -ChildPath $entry.name
-                $remoteKey = Combine-StoragePath -Prefix $normalizedShardPrefix -Name $entry.name
-                Write-Host (" -> {0}" -f $remoteKey)
-                Invoke-S3HttpUpload -EndpointUrl $S3EndpointUrl -Bucket $S3BucketName -Key $remoteKey -FilePath $localPath -Region $S3Region -AccessKeyId $S3AccessKeyId -SecretAccessKey $S3SecretAccessKey -ForcePathStyle $S3ForcePathStyle -PayloadHash $entry.sha256 -ContentType 'text/plain'
-            }
-        }
-
-        Write-Host ("Uploading manifest to {0}" -f $normalizedManifestRemote)
-        Invoke-S3HttpUpload -EndpointUrl $S3EndpointUrl -Bucket $S3BucketName -Key $normalizedManifestRemote -FilePath $manifestPath -Region $S3Region -AccessKeyId $S3AccessKeyId -SecretAccessKey $S3SecretAccessKey -ForcePathStyle $S3ForcePathStyle -PayloadHash $manifestHash -ContentType 'application/json'
-    }
-    default {
-        Write-Host "StorageProvider set to 'None'; skipping upload. Files available under '$OutputRoot'."
+foreach ($prefix in ($splitResult.ShardStats.Keys | Sort-Object)) {
+    $info = $splitResult.ShardStats[$prefix]
+    $fileInfo = Get-Item -LiteralPath $info.Path
+    $totalSizeBytes += $fileInfo.Length
+    $hash = (Get-FileHash -Path $info.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $manifestShards += [pscustomobject]@{
+        name    = "$prefix.txt"
+        prefix  = $prefix
+        entries = $info.Count
+        size    = [string]$fileInfo.Length
+        sha256  = $hash
     }
 }
 
-Write-Host "Upload completed successfully."
+$manifestVersionValue = if ([string]::IsNullOrWhiteSpace($ManifestVersion)) {
+    (Get-Date).ToString('yyyyMMdd-HHmmss')
+} else {
+    $ManifestVersion
+}
+
+$normalizedShardPrefix = Get-NormalizedForwardPath -PathValue $ShardRemotePrefix
+$manifestObject = [ordered]@{
+    version        = $manifestVersionValue
+    generatedAt    = (Get-Date).ToUniversalTime().ToString('o')
+    shardSize      = $ShardSize
+    shardPrefix    = $normalizedShardPrefix
+    totalEntries   = $totalEntries
+    inputLines     = $totalLines
+    invalidEntries = $invalidCount
+    skippedEntries = $skippedCount
+    totalShards    = $manifestShards.Count
+    totalSize      = [string]$totalSizeBytes
+    shards         = $manifestShards
+}
+
+Write-Host ("Writing manifest to {0}" -f $manifestPath)
+Write-JsonFile -Path $manifestPath -Data $manifestObject
+$manifestHash = (Get-FileHash -Path $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+Write-Host ("Manifest SHA256: {0}" -f $manifestHash)
+$cleanCombinedPath = Join-Path -Path $OutputRoot -ChildPath 'khdb-clean.txt'
+Write-Host ("Writing cleaned aggregate to {0}..." -f $cleanCombinedPath)
+Merge-ShardsToFile -Manifest $manifestObject -ShardsRoot $localShardRoot -TargetPath $cleanCombinedPath
+$cleanHash = (Get-FileHash -Path $cleanCombinedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Write-Host ("Clean KHDB SHA256: {0}" -f $cleanHash)
+$summaryMessage = ("Summary: {0} shards, {1} valid hashes, {2} invalid entries, {3} skipped, {4:N0} bytes." -f $manifestShards.Count, $totalEntries, $invalidCount, $skippedCount, $totalSizeBytes)
+
 Write-Host $summaryMessage
+Write-Host ("Package ready under '{0}'. Upload the shards to '{1}/', then manifest.json last." -f $OutputRoot, $normalizedShardPrefix)
 
 if ($checkpointEnabled -and $resolvedCheckpointPath -and (Test-Path -LiteralPath $resolvedCheckpointPath)) {
     Remove-Item -LiteralPath $resolvedCheckpointPath -Force

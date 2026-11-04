@@ -265,7 +265,7 @@ Describe 'Password-quality helpers' {
 }
 
 Describe 'KHDB publish -> update round trip' {
-    # Runs the real publisher (tools/Prepare-KHDBStorage.ps1 -SkipUpload) and feeds its package to
+    # Runs the real publisher (tools/Prepare-KHDBStorage.ps1) and feeds its package to
     # Update-ElysiumKhdb, so the manifest/shard format both sides use is checked end to end.
     BeforeAll {
         Import-Module (Join-Path $PSScriptRoot '../src/Elysium/Elysium.psd1') -Force
@@ -292,7 +292,7 @@ Describe 'KHDB publish -> update round trip' {
         }
         $sourcePath = Join-Path $TestDrive 'source.txt'
         Set-Content -LiteralPath $sourcePath -Value (@($source) + 'not-a-hash')
-        & (Join-Path $PSScriptRoot '../tools/Prepare-KHDBStorage.ps1') -SourcePath $sourcePath -OutputRoot $package -SkipUpload 6>$null 3>$null
+        & (Join-Path $PSScriptRoot '../tools/Prepare-KHDBStorage.ps1') -SourcePath $sourcePath -OutputRoot $package 6>$null 3>$null
 
         # Blob 'khdb/manifest.json' -> <package>/manifest.json, 'khdb/shards/<name>' -> <package>/shards/<name>
         Mock -ModuleName Elysium Invoke-DownloadWithRetry {
