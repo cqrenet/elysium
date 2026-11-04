@@ -237,7 +237,8 @@ function Ensure-NuGetAndPSGallery {
             Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction Stop | Out-Null
         }
     } catch { Write-Verbose ("NuGet provider install warning: {0}" -f $_.Exception.Message) }
-    try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop } catch { }
+    # PSGallery is deliberately left untrusted: the operator already confirmed this install, and
+    # -Force on Install-Module/Save-Module covers it without changing the host's repository policy.
 }
 
 function Ensure-ADModule {
