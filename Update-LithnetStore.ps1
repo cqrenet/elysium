@@ -143,17 +143,17 @@ try {
             Sync-HashesFromHibp
         }
 
-        foreach ($hashFile in ($hashSourcePaths.ToArray() | Sort-Object)) {
+        foreach ($hashFile in ($hashSourcePaths | Sort-Object)) {
             Write-Host ("Importing NTLM hash list '{0}'..." -f $hashFile)
             Import-CompromisedPasswordHashes -Filename $hashFile
         }
 
-        foreach ($plainFile in ($plaintextSourcePaths.ToArray() | Sort-Object)) {
+        foreach ($plainFile in ($plaintextSourcePaths | Sort-Object)) {
             Write-Host ("Importing plaintext password list '{0}'..." -f $plainFile)
             Import-CompromisedPasswords -Filename $plainFile
         }
 
-        foreach ($bannedFile in ($bannedWordSourcePaths.ToArray() | Sort-Object)) {
+        foreach ($bannedFile in ($bannedWordSourcePaths | Sort-Object)) {
             Write-Host ("Importing banned word list '{0}'..." -f $bannedFile)
             Import-BannedWords -Filename $bannedFile
         }
