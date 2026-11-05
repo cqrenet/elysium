@@ -224,6 +224,8 @@ function Import-CompatModule {
 }
 
 function Resolve-DSInternalsWeakHashFile {
+    # DSInternals wants a sorted file of bare, upper-case, unique hashes. The KHDB that Update-ElysiumKhdb
+    # builds already is one, so the normal case is one compiled pass over the file and no copy.
     param(
         [Parameter(Mandatory)][string]$Path
     )
@@ -232,51 +234,11 @@ function Resolve-DSInternalsWeakHashFile {
         throw "Weak password hashes file not found at '$Path'."
     }
 
-    $compatibleRegex = '^[0-9A-F]{32}$'
-    $legacyRegex = '^[0-9A-Fa-f]{32}(:\d+)?$'
-    $lineNumber = 0
-    $previousHash = $null
-    $duplicateCount = 0
-    $legacyEntryCount = 0
+    Write-Host ("Checking weak password hashes file '{0}' ({1:N1} GB)..." -f $Path, ((Get-Item -LiteralPath $Path).Length / 1GB))
+    $legacyEntryCount = [long]0
+    $duplicateCount = [long]0
     $needsNormalization = $false
-    $reader = $null
-
-    try {
-        $reader = New-Object System.IO.StreamReader($Path, [System.Text.Encoding]::UTF8, $true)
-        while (($line = $reader.ReadLine()) -ne $null) {
-            $lineNumber++
-            $trimmed = $line.Trim()
-            if ($trimmed.Length -eq 0) { continue }
-
-            if ($trimmed -notmatch $legacyRegex) {
-                throw ("Weak password hashes file '{0}' contains invalid content at line {1}: '{2}'." -f $Path, $lineNumber, $trimmed)
-            }
-
-            if ($trimmed -notmatch $compatibleRegex) {
-                $needsNormalization = $true
-                if ($trimmed.Contains(':')) { $legacyEntryCount++ }
-            }
-
-            $normalizedHash = ($trimmed.Split(':', 2)[0]).ToUpperInvariant()
-            if ($line -cne $trimmed -or $trimmed -cne $normalizedHash) {
-                $needsNormalization = $true
-            }
-
-            if ($null -ne $previousHash) {
-                if ($normalizedHash -lt $previousHash) {
-                    throw "Weak password hashes file '$Path' is not sorted alphabetically at line $lineNumber."
-                }
-                if ($normalizedHash -eq $previousHash) {
-                    $duplicateCount++
-                    $needsNormalization = $true
-                }
-            }
-
-            $previousHash = $normalizedHash
-        }
-    } finally {
-        if ($reader) { $reader.Dispose() }
-    }
+    [Elysium.KhdbText]::Inspect($Path, [ref]$legacyEntryCount, [ref]$duplicateCount, [ref]$needsNormalization)
 
     if (-not $needsNormalization) {
         return [pscustomobject]@{
@@ -286,29 +248,7 @@ function Resolve-DSInternalsWeakHashFile {
     }
 
     $tmpPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ('elysium-khdb-' + [System.Guid]::NewGuid().ToString() + '.txt'))
-    $encoding = New-Object System.Text.UTF8Encoding($false)
-    $reader = $null
-    $writer = $null
-    $lastWrittenHash = $null
-
-    try {
-        $reader = New-Object System.IO.StreamReader($Path, [System.Text.Encoding]::UTF8, $true)
-        $writer = New-Object System.IO.StreamWriter($tmpPath, $false, $encoding)
-
-        while (($line = $reader.ReadLine()) -ne $null) {
-            $trimmed = $line.Trim()
-            if ($trimmed.Length -eq 0) { continue }
-
-            $normalizedHash = ($trimmed.Split(':', 2)[0]).ToUpperInvariant()
-            if ($normalizedHash -eq $lastWrittenHash) { continue }
-
-            $writer.WriteLine($normalizedHash)
-            $lastWrittenHash = $normalizedHash
-        }
-    } finally {
-        if ($reader) { $reader.Dispose() }
-        if ($writer) { $writer.Dispose() }
-    }
+    [void][Elysium.KhdbText]::WriteNormalized($Path, $tmpPath)
 
     $normalizationReasons = @()
     if ($legacyEntryCount -gt 0) { $normalizationReasons += "$legacyEntryCount legacy HASH:count entries" }

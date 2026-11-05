@@ -325,6 +325,20 @@ Describe 'Password-quality helpers' {
         }
     }
 
+    It 'normalizes a file with a blank line or a padded line instead of handing it to DSInternals as is' {
+        foreach ($case in @{ name = 'blank'; lines = @(('0' * 32), '', ('A' * 32)) }, @{ name = 'padded'; lines = @(('0' * 32), ('  ' + 'A' * 32)) }) {
+            $path = Join-Path $TestDrive "$($case.name).txt"
+            Set-Content -LiteralPath $path -Value $case.lines
+            $resolved = Resolve-DSInternalsWeakHashFile -Path $path 3>$null 6>$null
+            try {
+                $resolved.IsTemporary | Should -BeTrue
+                Get-Content -LiteralPath $resolved.Path | Should -Be @(('0' * 32), ('A' * 32))
+            } finally {
+                Remove-Item -LiteralPath $resolved.Path -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
     It 'rejects unsorted and malformed KHDB files' {
         $unsorted = Join-Path $TestDrive 'unsorted.txt'
         Set-Content -LiteralPath $unsorted -Value @(('B' * 32), ('A' * 32))
