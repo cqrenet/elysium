@@ -80,59 +80,33 @@ function Validate-Manifest {
     }
 }
 
-function Convert-KHDBLineToHash {
-    param(
-        [Parameter(Mandatory)][string]$Line,
-        [string]$SourceName,
-        [int]$LineNumber
-    )
-
-    $trimmed = $Line.Trim()
-    if ($trimmed.Length -eq 0) { return $null }
-    if ($trimmed -notmatch '^[0-9A-Fa-f]{32}(:\d+)?$') {
-        throw ("Invalid KHDB content in '{0}' at line {1}: '{2}'." -f $SourceName, $LineNumber, $trimmed)
-    }
-
-    return ($trimmed.Split(':', 2)[0]).ToUpperInvariant()
-}
-
 function Merge-ShardsToFile {
+    # Concatenates the manifest's shards (by name, which is prefix order) into one sorted, de-duplicated
+    # KHDB file, using the compiled KhdbMerger from KhdbMerge.ps1.
     param(
         [psobject]$Manifest,
         [string]$ShardsRoot,
         [string]$TargetPath
     )
 
-    $encoding = New-Object System.Text.UTF8Encoding($false)
-    $writer = New-Object System.IO.StreamWriter($TargetPath, $false, $encoding)
-    $previousHash = $null
+    $shards = @($Manifest.shards | Sort-Object name)
+    $merger = [Elysium.KhdbMerger]::new($TargetPath)
     try {
-        foreach ($entry in ($Manifest.shards | Sort-Object name)) {
+        $index = 0
+        foreach ($entry in $shards) {
+            $index++
             $relative = [string]$entry.name
             $shardPath = Join-Path -Path $ShardsRoot -ChildPath $relative
             if (-not (Test-Path -LiteralPath $shardPath)) {
                 throw "Missing shard on disk: $relative"
             }
-            $reader = New-Object System.IO.StreamReader($shardPath, [System.Text.Encoding]::UTF8, $true)
-            $lineNumber = 0
-            try {
-                while (($line = $reader.ReadLine()) -ne $null) {
-                    $lineNumber++
-                    $normalizedHash = Convert-KHDBLineToHash -Line $line -SourceName $relative -LineNumber $lineNumber
-                    if ($null -eq $normalizedHash) { continue }
-                    if ($previousHash -and $normalizedHash -lt $previousHash) {
-                        throw "Shard merge would produce an unsorted KHDB file at '$relative' line $lineNumber."
-                    }
-                    if ($normalizedHash -eq $previousHash) { continue }
-                    $writer.WriteLine($normalizedHash)
-                    $previousHash = $normalizedHash
-                }
-            } finally {
-                $reader.Dispose()
-            }
+            Write-Progress -Activity 'Building combined KHDB' -Status ("{0}/{1} shards, {2:N0} hashes" -f $index, $shards.Count, $merger.Written) -PercentComplete (100 * $index / $shards.Count)
+            $merger.AddShard($shardPath, $relative)
         }
+        Write-Progress -Activity 'Building combined KHDB' -Completed
+        Write-Host ("Combined KHDB: {0:N0} hash(es), {1:N0} duplicate(s) removed." -f $merger.Written, $merger.Duplicates)
     } finally {
-        $writer.Dispose()
+        $merger.Dispose()
     }
 }
 
@@ -141,31 +115,14 @@ function Validate-KHDBFile {
 
     if (-not (Test-Path -LiteralPath $Path)) { throw "Validation failed: $Path not found." }
 
-    $regex = '^[0-9A-Fa-f]{32}$'
-    $lineNumber = 0
-    $previous = $null
-    $duplicates = 0
-    $reader = New-Object System.IO.StreamReader($Path, [System.Text.Encoding]::UTF8, $true)
-    try {
-        while (($line = $reader.ReadLine()) -ne $null) {
-            $lineNumber++
-            $trimmed = $line.Trim()
-            if ($trimmed.Length -eq 0) { continue }
-            if ($trimmed -notmatch $regex) {
-                throw "Validation failed: unexpected format at line $lineNumber ('$trimmed')."
-            }
-            $normalized = $trimmed.ToUpperInvariant()
-            if ($previous -and $normalized -lt $previous) {
-                Write-Warning ("Validation warning: line {0} is out of order." -f $lineNumber)
-            }
-            if ($normalized -eq $previous) { $duplicates++ }
-            $previous = $normalized
-        }
-    } finally {
-        $reader.Dispose()
-    }
+    $duplicates = [long]0
+    $outOfOrder = [long]0
+    $count = [Elysium.KhdbText]::Validate($Path, [ref]$duplicates, [ref]$outOfOrder)
 
-    if ($lineNumber -eq 0) { throw 'Validation failed: KHDB file is empty.' }
+    if ($count -eq 0) { throw 'Validation failed: KHDB file is empty.' }
+    if ($outOfOrder -gt 0) {
+        Write-Warning ("Validation warning: {0} line(s) out of order." -f $outOfOrder)
+    }
     if ($duplicates -gt 0) {
         Write-Warning ("Validation warning: detected {0} duplicate hash entries (file remains unchanged)." -f $duplicates)
     }

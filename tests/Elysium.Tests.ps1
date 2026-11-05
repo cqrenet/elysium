@@ -150,9 +150,21 @@ Describe 'Update-ElysiumKhdb (incremental sync against a fake S3 store)' {
         (Get-Downloads).Count | Should -Be 3   # manifest + 2 shards
     }
 
-    It 'downloads only the manifest when nothing changed' {
+    It 'downloads only the manifest and keeps khdb.txt untouched when nothing changed' {
+        $before = (Get-Item -LiteralPath $khdb).LastWriteTimeUtc
+        Start-Sleep -Milliseconds 1100   # file times have 1 s resolution on some filesystems
         Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
         Get-Downloads | Should -Be @('GET bucket/khdb/manifest.json')
+        (Get-Item -LiteralPath $khdb).LastWriteTimeUtc | Should -Be $before
+    }
+
+    It 'rebuilds khdb.txt when it is missing, even though nothing was downloaded' {
+        Remove-Item -LiteralPath $khdb
+        Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
+        Get-Downloads | Out-Null   # drain: this test only checks the rebuilt file
+        Get-Content -LiteralPath $khdb | Should -Be @(
+            '00112233445566778899AABBCCDDEEFF', '00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',
+            'AB112233445566778899AABBCCDDEEFF', 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
     }
 
     It 'downloads only the changed shard and removes shards the manifest no longer lists' {
@@ -418,5 +430,71 @@ Describe 'Storage transfers' {
         Invoke-StorageDownload -Storage $s3 -Key 'flaky/object.txt' -TargetPath $target 3>$null
         Get-Content -LiteralPath $target | Should -Be 'eventually'
         Should -Invoke Start-Sleep -Times 1 -Exactly
+    }
+}
+
+Describe 'Streaming KHDB merge (compiled KhdbMerger)' {
+    BeforeAll {
+        $shardRoot = Join-Path $TestDrive 'shards'
+        New-Item -ItemType Directory -Path $shardRoot -Force | Out-Null
+        $manifestFor = { param($names) [pscustomobject]@{ shards = @($names | ForEach-Object { [pscustomobject]@{ name = $_ } }) } }
+    }
+
+    It 'normalizes lowercase and HASH:count lines, removes duplicates across shards, and counts them' {
+        # Real shards are split by prefix, so each one only holds its own range and the merged order holds.
+        Set-Content -LiteralPath (Join-Path $shardRoot '00.txt') -Value @(('0' * 31 + '1'), ('0' * 31 + '1' + ':9'), ('0' * 31 + '2'))
+        Set-Content -LiteralPath (Join-Path $shardRoot 'ab.txt') -Value @(('ab' * 16), ('AB' * 16), ('ac' * 16))
+        $target = Join-Path $TestDrive 'merged.txt'
+        Merge-ShardsToFile -Manifest (& $manifestFor '00.txt', 'ab.txt') -ShardsRoot $shardRoot -TargetPath $target 6>$null
+        Get-Content -LiteralPath $target | Should -Be @(('0' * 31 + '1'), ('0' * 31 + '2'), ('AB' * 16), ('AC' * 16))
+    }
+
+    It 'names the shard and line of malformed content' {
+        Set-Content -LiteralPath (Join-Path $shardRoot 'bad.txt') -Value @(('0' * 32), 'not-a-hash')
+        { Merge-ShardsToFile -Manifest (& $manifestFor 'bad.txt') -ShardsRoot $shardRoot -TargetPath (Join-Path $TestDrive 'x.txt') 6>$null } |
+            Should -Throw "*'bad.txt' at line 2*"
+    }
+
+    It 'rejects a bare count suffix and a non-digit suffix' {
+        $bad = Join-Path $TestDrive 'suffix.txt'
+        foreach ($line in ('0' * 32 + ':', '0' * 32 + ':x1', '0' * 31)) {
+            Set-Content -LiteralPath $bad -Value $line
+            { Merge-ShardsToFile -Manifest (& $manifestFor 'suffix.txt') -ShardsRoot $TestDrive -TargetPath (Join-Path $TestDrive 'y.txt') 6>$null } | Should -Throw
+        }
+    }
+
+    It 'warns about duplicates when validating a finished file' {
+        $file = Join-Path $TestDrive 'dups.txt'
+        Set-Content -LiteralPath $file -Value @(('0' * 32), ('0' * 32), ('1' * 32))
+        $warnings = @(Validate-KHDBFile -Path $file 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+        ($warnings -join ' ') | Should -Match '1 duplicate'
+    }
+
+    It 'merges 300,000 hashes across 256 shards with the same result as a sorted reference' {
+        $rng = [System.Random]::new(42)
+        $all = [System.Collections.Generic.List[string]]::new()
+        $bytes = New-Object byte[] 16
+        for ($i = 0; $i -lt 300000; $i++) {
+            $rng.NextBytes($bytes)
+            $all.Add(([BitConverter]::ToString($bytes).Replace('-', '')))
+        }
+        $all.Sort([StringComparer]::Ordinal)
+        # One pass to bucket the hashes by prefix (the list is already sorted, so each bucket stays sorted).
+        $buckets = @{}
+        foreach ($hash in $all) {
+            $prefix = $hash.Substring(0, 2).ToLowerInvariant()
+            if (-not $buckets.ContainsKey($prefix)) { $buckets[$prefix] = [System.Collections.Generic.List[string]]::new() }
+            $buckets[$prefix].Add($hash)
+        }
+        $names = foreach ($prefix in $buckets.Keys | Sort-Object) {
+            $name = "$prefix.txt"
+            Set-Content -LiteralPath (Join-Path $shardRoot $name) -Value $buckets[$prefix]
+            $name
+        }
+        $target = Join-Path $TestDrive 'big.txt'
+        Merge-ShardsToFile -Manifest (& $manifestFor $names) -ShardsRoot $shardRoot -TargetPath $target 6>$null
+        (Get-Content -LiteralPath $target).Count | Should -Be 300000
+        (Get-Content -LiteralPath $target | Select-Object -First 1) | Should -Be $all[0]
+        (Get-Content -LiteralPath $target | Select-Object -Last 1) | Should -Be $all[-1]
     }
 }

@@ -80,6 +80,7 @@ Key sections:
 - Settings parsing is done manually via `Get-Content` and string splitting on `=`, not `ConvertFrom-StringData`.
 - Paths are resolved relative to `$PSScriptRoot` whenever possible.
 - Large file operations use `StreamReader` / `StreamWriter` with explicit `UTF8Encoding($false)` (no BOM) and large buffers (1 MiB preferred).
+- The KHDB merge and validation are compiled (`src/Elysium/Private/KhdbMerge.ps1`). Do not reintroduce per-line PowerShell loops over the KHDB: a full file is hundreds of millions of lines and that took hours on 5.1.
 - All storage transfers go through `src/Elysium/Private/Storage.ps1` (`Get-StorageConfig`, `Invoke-StorageDownload`, `Invoke-StorageUpload`). Concurrency uses `Invoke-InModuleRunspace` (a runspace pool that imports the module), which works on 5.1 and 7 - do not use `ForEach-Object -Parallel` or inject function text.
 
 ## Build / Run Commands
