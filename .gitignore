@@ -4,6 +4,8 @@ khdb.txt.zip
 ElysiumSettings.txt
 /Reports
 /khdb-shards
+/khdb-package/shards/
 khdb-manifest.json
 /elysium/.vscode
 /.vscode
+__pycache__/

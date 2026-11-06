@@ -7,7 +7,6 @@
 ##################################################
 ## Project: Elysium                             ##
 ## File: Elysium.ps1                            ##
-## Version: 2.4.6                               ##
 ## Support: support@cqre.net                    ##
 ##################################################
 
@@ -20,14 +19,17 @@ Elysium.ps1 offers a menu to perform various actions:
 1. Download/Update Known-Hashes Database (KHDB)
 2. Test Weak AD Passwords
 3. Extract and Send Current Hashes for KHDB Update
-4. Uninstall the tool
-5. Update Lithnet Password Protection store
+4. Update Lithnet Password Protection store
+5. Uninstall the tool
 6. Exit
 #>
 
 # Safer defaults
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Pure keypress logic for the arrow-key menu below; kept in the module's Private/ so Pester can test
+# it without a real console.
+. (Join-Path -Path $PSScriptRoot -ChildPath 'src/Elysium/Private/Menu.ps1')
 # Define the path to the settings file
 $settingsFilePath = Join-Path -Path $PSScriptRoot -ChildPath "ElysiumSettings.txt"
 
@@ -90,25 +92,76 @@ function Invoke-WindowsPowerShellScript {
     }
 }
 
+$script:MenuItems = @(
+    'Download/Update Known-Hashes Database (KHDB)'
+    'Test Weak AD Passwords'
+    'Extract and Send Current Hashes for KHDB Update'
+    'Update Lithnet Password Protection Store'
+    'Uninstall'
+    'Exit'
+)
+
 function Show-Menu {
+    <#
+    .SYNOPSIS
+    Draws the main menu and returns the chosen 1-based item, or $null if the operator backed out.
+
+    .DESCRIPTION
+    Arrow keys plus Enter, or a direct number key, drive the selection (logic in Resolve-ElysiumMenuKeyPress);
+    Escape or Q backs out. Falls back to the plain numbered Read-Host prompt when input is redirected
+    or the host has no real console (CI, some IDE terminals) - [Console]::ReadKey throws there.
+    #>
     param (
         [string]$Title = 'Elysium Tool Main Menu'
     )
-    Clear-Host
-    Write-Host "================ $Title ================"
-    Write-Host "1: Download/Update Known-Hashes Database (KHDB)"
-    Write-Host "2: Test Weak AD Passwords"
-    Write-Host "3: Extract and Send Current Hashes for KHDB Update"
-    Write-Host "4: Update Lithnet Password Protection Store"
-    Write-Host "5: Uninstall"
-    Write-Host "6: Exit"
+
+    $useFallback = [System.Console]::IsInputRedirected
+    if (-not $useFallback) {
+        try { [void]$Host.UI.RawUI.CursorPosition } catch { $useFallback = $true }
+    }
+
+    if ($useFallback) {
+        while ($true) {
+            Clear-Host
+            Write-Host "================ $Title ================"
+            for ($i = 0; $i -lt $script:MenuItems.Count; $i++) { Write-Host ("{0}: {1}" -f ($i + 1), $script:MenuItems[$i]) }
+            $choice = Read-Host "Please make a selection"
+            if ($choice -match '^[1-9]$' -and [int]$choice -le $script:MenuItems.Count) { return [int]$choice }
+            if ($choice -match '^(?i:q)$') { return $null }
+            Write-Host "Invalid selection, please try again."
+        }
+    }
+
+    $index = 0
+    $originalCursorVisible = [System.Console]::CursorVisible
+    try {
+        [System.Console]::CursorVisible = $false
+        while ($true) {
+            Clear-Host
+            Write-Host "================ $Title ================"
+            Write-Host "(Up/Down + Enter, or a number. Esc/Q to exit.)"
+            for ($i = 0; $i -lt $script:MenuItems.Count; $i++) {
+                $line = "{0}: {1}" -f ($i + 1), $script:MenuItems[$i]
+                if ($i -eq $index) { Write-Host $line -BackgroundColor DarkCyan -ForegroundColor Black }
+                else { Write-Host $line }
+            }
+            $keyInfo = [System.Console]::ReadKey($true)
+            if ($keyInfo.Key -eq [System.ConsoleKey]::Q) { return $null }
+            $step = Resolve-ElysiumMenuKeyPress -CurrentIndex $index -ItemCount $script:MenuItems.Count -Key $keyInfo.Key
+            if ($step.Cancelled) { return $null }
+            $index = $step.Index
+            if ($step.Committed) { return $index + 1 }
+        }
+    } finally {
+        [System.Console]::CursorVisible = $originalCursorVisible
+    }
 }
 
 Start-OrchestratorTranscript -BasePath $PSScriptRoot
 try {
 do {
-    Show-Menu
-    $userSelection = Read-Host "Please make a selection"
+    $picked = Show-Menu
+    $userSelection = if ($null -eq $picked) { '6' } else { "$picked" }
     try {
     switch ($userSelection) {
         '1' {

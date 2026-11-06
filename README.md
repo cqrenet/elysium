@@ -17,7 +17,7 @@ Sensitive operations are confined only to the dedicated host. In the third step,
 
 ## Versioning and Releases
 
-Elysium uses a **unified project version** starting with v2.2.0. Every script, the settings template, and the documentation share the same version number so you can verify consistency at a glance by checking the header of any `.ps1` file. Releases are tagged in Git (`v<major>.<minor>.<patch>`) and documented in `CHANGELOG.md`.
+Elysium uses a **unified project version** starting with v2.2.0. The version is defined once, as `ModuleVersion` in `src/Elysium/Elysium.psd1`; the scripts read it from there at runtime (User-Agent, usage beacon, diagnostic dumps). To release, change `ModuleVersion`, add the `CHANGELOG.md` entry, commit, and tag `v<major>.<minor>.<patch>`.
 
 Prior to v2.2.0, each script carried its own version number; those historical versions are preserved in the changelog for reference.
 
@@ -27,34 +27,38 @@ Prior to v2.2.0, each script carried its own version number; those historical ve
 This tool is provided in private git repository. Installation and updating is done with cloning and pulling from this repository.
 During first run, the tool will ask for passphrase that will be used to encrypt/decrypt sensitive content.
 After installation, edit ElysiumSettings.txt, check all variables and add domains to test.
-All scripts automatically relaunch under PowerShell 7 (`pwsh`) when it is installed so that features like parallel transfers are available; if pwsh is missing they continue under Windows PowerShell 5.1 with the legacy single-threaded behavior. The two DSInternals-driven workflows (menu options 2 and 3) load the legacy `ActiveDirectory` and `DSInternals` modules, so they automatically fall back to Windows PowerShell even if pwsh is present.
+The tool runs on Windows PowerShell 5.1 (always present on Windows) or PowerShell 7 (`pwsh`); KHDB downloads run concurrently on both. The two DSInternals-driven workflows (menu options 2 and 3, `Test-WeakADPasswords.ps1` and `Extract-NTHashes.ps1`) load the legacy `ActiveDirectory` and `DSInternals` modules, so they relaunch themselves under Windows PowerShell when started from pwsh.
 ### Update Known-Hashed Database (KHDB)
 Run script Elysium.ps1 as an administrator and choose option 1 (Update Known-Hashes Database).
-The updater now pulls a manifest plus individual hash shards (two-hex prefix layout) from the configured storage (Azure Blob or S3-compatible), verifies checksums, replaces only changed shards, and rebuilds `khdb.txt` for local use. Deleted shards listed in the manifest are removed automatically. When PowerShell 7 is available the downloader automatically fetches up to `-MaxParallelTransfers` shards in parallel (default `5`); on Windows PowerShell 5.1 it reverts to the original sequential behavior. Override the concurrency as needed when running the script directly (for example `.\Update-KHDB.ps1 -MaxParallelTransfers 8`).
+The updater pulls a manifest plus individual hash shards (two-hex prefix layout) from the configured storage (Azure Blob or S3-compatible), verifies each shard's size and SHA-256 against the manifest, replaces only changed shards, and rebuilds `khdb.txt` for local use. Shards no longer listed in the manifest are removed automatically. Up to `-MaxParallelTransfers` shards (default `5`) download concurrently on both Windows PowerShell 5.1 and PowerShell 7; override it when running the script directly (for example `.\Update-KHDB.ps1 -MaxParallelTransfers 8`). The KHDB credentials only need read access to the KHDB paths.
 
-To publish an updated shard set, run `Prepare-KHDBStorage.ps1` against your sorted `khdb.txt` (or point it at the directory/list of the Have I Been Pwned `.gz` slices). The helper reconstructs the full 32‑hex NTLM values (prefix + remainder), deduplicates per hash (keeping the largest count), splits by the first two hex characters, writes a manifest (`version`, `sha256`, `size`, entry counts), and can upload the resulting files directly to Azure Blob Storage (via SAS) or S3-compatible endpoints using SigV4. Invalid or malformed entries are omitted automatically, and a short report (aggregate counts + `invalid-hashes.txt`) is produced for review. Example:
+To publish an updated shard set (tool provider only), build the package with `tools/Prepare-KHDBStorage.ps1` and upload it with your storage provider's own CLI. The script runs on any OS with PowerShell 7 (`pwsh`) and needs no Elysium settings or credentials. It takes your sorted `khdb.txt` (or the directory/list of the Have I Been Pwned `.gz` slices), reconstructs the full 32-hex NTLM values (prefix + remainder), deduplicates, splits by the first two hex characters, and writes `manifest.json` (`version`, `shardPrefix`, and `sha256`/`size`/entry count per shard). Invalid or malformed entries are omitted and listed in `invalid-hashes.txt`.
 
 ```powershell
-.\Prepare-KHDBStorage.ps1 -SourcePath .\khdb.txt `
-    -OutputRoot .\publish `
-    -StorageProvider S3 `
-    -S3EndpointUrl https://s3.example.com `
-    -S3BucketName private-khdb `
-    -S3AccessKeyId AKIA... `
-    -S3SecretAccessKey ... `
-    -ManifestRemotePath khdb/manifest.json `
-    -ShardRemotePrefix khdb/shards
+pwsh ./tools/Prepare-KHDBStorage.ps1 -SourcePath ./khdb.txt -OutputRoot ./publish -Force
 ```
 
-Use `-SkipUpload` to stage files locally, or `-StorageProvider Azure` with `storageAccountName`/`containerName`/`sasToken` when targeting Azure Blob Storage. Add `-ShowProgress` (optionally tune `-ProgressUpdateInterval`) if you want a running `Write-Progress` indicator while the hashes are being split. Pass `-ForcePlainText` when your `khdb.txt` already contains complete hashes and you want `.gz` references treated as invalid instead of being expanded. When you only need to push an already prepared package, combine `-UploadOnly` with `-OutputRoot` pointing at the existing shard directory and choose the storage provider to perform an upload-only run. Missing storage values are pulled from `ElysiumSettings.txt` automatically (override the path with `-SettingsPath`) so you don’t have to retype S3/Azure credentials for every run. On PowerShell 7, `Prepare-KHDBStorage.ps1` can push shards concurrently by setting `-MaxParallelTransfers` (default `5`); Windows PowerShell 5.1 automatically falls back to serial uploads.
+Upload the shards first and `manifest.json` last, so a client never downloads a manifest that points at shards that are not there yet. The remote paths must match `-ShardRemotePrefix` (default `khdb/shards`, recorded in the manifest) and the clients' `KhdbManifestPath` (default `khdb/manifest.json`):
+
+```sh
+# S3-compatible, with the AWS CLI (rclone sync/copyto against an S3 remote works the same way)
+aws s3 sync ./publish/shards s3://BUCKET/khdb/shards --endpoint-url https://s3.example.com
+aws s3 cp   ./publish/manifest.json s3://BUCKET/khdb/manifest.json --endpoint-url https://s3.example.com
+
+# Azure Blob Storage, with azcopy and a SAS that allows write
+azcopy sync ./publish/shards "https://ACCOUNT.blob.core.windows.net/CONTAINER/khdb/shards?SAS"
+azcopy copy ./publish/manifest.json "https://ACCOUNT.blob.core.windows.net/CONTAINER/khdb/manifest.json?SAS"
+```
+
+Shard names are stable (`00.txt` ... `ff.txt` with the default `-ShardSize 2`), so no remote deletion step is needed. Add `-ShowProgress` (optionally tune `-ProgressUpdateInterval`) for a running `Write-Progress` indicator while the hashes are being split. Pass `-ForcePlainText` when your `khdb.txt` already contains complete hashes and you want `.gz` references treated as invalid instead of being expanded.
 
 Every run also emits a cleaned, DSInternals-friendly `khdb-clean.txt` beside the shards so you can inspect or distribute the merged list before publishing.
 
 When `-ForcePlainText` is specified the script automatically keeps a checkpoint (default: `<output>/khdb.checkpoint.json`) and resumes from it on the next run so massive inputs don’t restart from scratch. Use `-CheckpointPath` to relocate that file or `-NoCheckpoint` to disable the behavior entirely.
 ### Test Weak AD passwords
 Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Passwords).
-The script lists domains in the same order as they appear in `ElysiumSettings.txt`. After you pick one, it prompts for credentials and validates them against the selected domain controller before running the password-quality test.
-The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation.
+The script lists domains in the same order as they appear in `ElysiumSettings.txt`. After you pick one, it prompts for credentials and validates them against the selected domain controller before running the password-quality test. To skip the domain prompt, name the domain: `.\Test-WeakADPasswords.ps1 -Domain contoso.local` (the same works for `.\Extract-NTHashes.ps1`). For fully non-interactive runs, call the cmdlets with a credential: `Import-Module .\src\Elysium; Test-ElysiumPasswordQuality -Domain contoso.local -Credential $cred` (or `Send-ElysiumHashExport`).
+The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation. Next to the text report, a `.json` file holds the same results as data: one finding per check (`WeakPassword`, `LMHash`, `DuplicatePasswordGroups`, ...) with each account's logon name and UPN, plus domain, DC, tool version and the number of accounts tested. The cmdlet also returns a summary object (domain, accounts tested, finding counts per check, report paths).
 The KHDB file is consumed by DSInternals as a sorted hash list with one NT hash per line (for example `HASH`). Do not include `:count` suffixes in `khdb.txt`; the packaging and update scripts normalize legacy `HASH:count` input to the hash-only format automatically.
 
 #### Least privileges for password-quality testing
@@ -106,20 +110,19 @@ If you want to know the script was executed without collecting telemetry, set a 
 
 ### Send current hashes for update KHDB
 Run script Elysium.ps1 as an administrator and choose option 3 (Extract and Send Hashes).
-Domains are listed in configuration order, after which the script prompts for the replication-capable account password. With valid credentials, it extracts current NTLM hashes (no history) for active accounts, compresses the results, encrypts them with the configured passphrase, and uploads the payload to the configured storage (Azure Blob or S3-compatible). A checksum-verified round-trip download confirms the upload before local artifacts are removed.
+Domains are listed in configuration order, after which the script prompts for the replication-capable account password. With valid credentials, it extracts current NTLM hashes (no history) for active accounts, compresses the results, encrypts them with the configured passphrase, and uploads the payload to the configured storage (Azure Blob or S3-compatible). The upload is a single PUT that the storage service checks against a digest sent with it (`Content-MD5` on Azure, the SigV4-signed SHA-256 on S3) and rejects if the body does not match, so nothing is downloaded back: the upload credentials need write access only, and should not be able to read or list other uploads.
 
-**Encrypted export format (v2.4.5+, magic `ELY2`):** `4-byte magic 'ELY2' | 16-byte PBKDF2 salt | 16-byte AES IV | AES-256-CBC ciphertext | 32-byte HMAC-SHA256`. Both keys are derived from the configured passphrase via one PBKDF2-SHA256 (100,000 iterations) byte stream: the first 32 bytes are the AES key, the next 32 are the HMAC key. The HMAC covers `magic | salt | iv | ciphertext` (encrypt-then-MAC) so a decrypt tool must verify it *before* decrypting - CBC alone doesn't detect a wrong passphrase or corrupted/tampered ciphertext, it just produces garbage or an unhelpful padding exception. This is a breaking change from the older `ELY1` format (no HMAC trailer) produced before v2.4.5; any external decryption tooling on the air-gapped cracking machine needs updating to match.
+**Encrypted export format (v2.4.6+, magic `ELY2`):** `4-byte magic 'ELY2' | 16-byte PBKDF2 salt | 16-byte AES IV | AES-256-CBC ciphertext | 32-byte HMAC-SHA256`. Both keys are derived from the configured passphrase via one PBKDF2-SHA256 (100,000 iterations) byte stream: the first 32 bytes are the AES key, the next 32 are the HMAC key. The HMAC covers `magic | salt | iv | ciphertext` (encrypt-then-MAC) so a decrypt tool must verify it *before* decrypting - CBC alone doesn't detect a wrong passphrase or corrupted/tampered ciphertext, it just produces garbage or an unhelpful padding exception. This is a breaking change from the older `ELY1` format (no HMAC trailer) produced before v2.4.6; any external decryption tooling on the air-gapped cracking machine needs updating to match. The bundled `tools/decrypt.py` reads `ELY2`, `ELY1`, and the pre-`ELY1` legacy format; `python3 tests/test_decrypt.py` checks it against the PowerShell encryptor (needs `pwsh` and `pycryptodome`).
 
 ### Update Lithnet Password Protection store
-Run script Elysium.ps1 as an administrator and choose option 5 (Update Lithnet Password Protection Store).
-Configure the target folder via `LithnetStorePath` in `ElysiumSettings.txt` (the location created with `Open-Store`). The script automatically imports the `khdb.txt` file unless you override/add additional NTLM hash lists in `LithnetHashSources` (comma or semicolon separated). You can also populate plaintext password lists (`LithnetPlaintextSources`) and banned-word files (`LithnetBannedWordSources`), or enable `LithnetSyncHibp=true` to seed the store directly from the Have I Been Pwned API (using `Sync-HashesFromHibp`). Behind the scenes the helper loads the `LithnetPasswordProtection` module, opens the store, runs [`Import-CompromisedPasswordHashes`](https://docs.lithnet.io/password-protection/advanced-help/powershell-reference/import-compromisedpasswordhashes)/`Import-CompromisedPasswords`/`Import-BannedWords` for each configured file, and then closes the store.
+Run script Elysium.ps1 as an administrator and choose option 4 (Update Lithnet Password Protection Store).
+Configure the target folder via `LithnetStorePath` in `ElysiumSettings.txt` (the location created with `Open-Store`). The script automatically imports the KHDB (`WeakPasswordsDatabase` under `InstallationPath`, default `khdb.txt` next to the scripts) unless you override/add additional NTLM hash lists in `LithnetHashSources` (comma or semicolon separated). You can also populate plaintext password lists (`LithnetPlaintextSources`) and banned-word files (`LithnetBannedWordSources`), or enable `LithnetSyncHibp=true` to seed the store directly from the Have I Been Pwned API (using `Sync-HashesFromHibp`). Behind the scenes the helper loads the `LithnetPasswordProtection` module, opens the store, runs [`Import-CompromisedPasswordHashes`](https://docs.lithnet.io/password-protection/advanced-help/powershell-reference/import-compromisedpasswordhashes)/`Import-CompromisedPasswords`/`Import-BannedWords` for each configured file, and then closes the store.
 
 S3-compatible usage notes:
-- No AWS Tools required. The scripts sign requests using native SigV4 via .NET and HttpClient, including non-default endpoint ports.
-- To force using AWS Tools instead, set `s3UseAwsTools = true` in `ElysiumSettings.txt` and install `AWS.Tools.S3`.
+- No AWS Tools or Az modules required. Requests are signed with native SigV4 (S3) or use the SAS token (Azure) via .NET HttpClient, including non-default endpoint ports.
 ### Uninstallation
-Run script Elysium.ps1 as an administrator and choose option 4 (Uninstall).
-The script will then delete everything and remove the passphrase variable.
+Run script Elysium.ps1 as an administrator and choose option 5 (Uninstall).
+After you type `YES` to confirm, the script deletes everything (including reports, the KHDB, and settings) and removes the passphrase variable. Run `.\Uninstall.ps1 -Force` to skip the confirmation.
 ---
 ## FAQ
 
