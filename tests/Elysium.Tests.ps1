@@ -167,6 +167,17 @@ Describe 'Update-ElysiumKhdb (incremental sync against a fake S3 store)' {
             'AB112233445566778899AABBCCDDEEFF', 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
     }
 
+    It 'rebuilds khdb.txt when something replaced it without touching the manifest or shards' {
+        # khdb.txt is tracked in git (unlike the shard cache and khdb-build.sha256), so a `git pull`
+        # or `checkout` can silently swap a real build for some other file's content.
+        Set-Content -LiteralPath $khdb -Value 'not the real khdb content'
+        Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
+        Get-Downloads | Out-Null   # drain: shards/manifest are untouched, only khdb.txt is wrong
+        Get-Content -LiteralPath $khdb | Should -Be @(
+            '00112233445566778899AABBCCDDEEFF', '00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',
+            'AB112233445566778899AABBCCDDEEFF', 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
+    }
+
     It 'downloads only the changed shard and removes shards the manifest no longer lists' {
         $stale = Join-Path $root 'khdb-shards/zz.txt'
         Set-Content -LiteralPath $stale -Value ('Z' * 32)

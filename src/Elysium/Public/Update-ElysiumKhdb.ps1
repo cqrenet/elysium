@@ -158,14 +158,23 @@ function Update-ElysiumKhdb {
         $combinedTemp = Join-Path -Path $tmpDir.FullName -ChildPath 'khdb-combined.txt'
 
         # Rebuilding the merged file is the slow step, so skip it when this exact manifest was already built
-        # into place and nothing was downloaded or removed. The marker is written only after a successful
-        # build, so a failed run never leaves a skip-worthy state behind.
+        # into place and nothing was downloaded or removed. The marker records the built file's own size
+        # alongside the manifest hash: khdb.txt is tracked in git (unlike the shard cache and this marker),
+        # so a `git pull`/`checkout` can silently replace a real build with the small repo-tracked sample
+        # while leaving the marker and shard cache untouched - size alone catches that case cheaply. The
+        # marker is written only after a successful build, so a failed run never leaves a skip-worthy state.
         $buildMarkerPath = Join-Path -Path $installPath -ChildPath 'khdb-build.sha256'
         $manifestHash = Get-FileSha256Lower -Path $manifestTempPath
         $lastBuildHash = $null
-        if (Test-Path -LiteralPath $buildMarkerPath) { $lastBuildHash = (Get-Content -LiteralPath $buildMarkerPath -Raw).Trim() }
+        $lastBuildSize = $null
+        if (Test-Path -LiteralPath $buildMarkerPath) {
+            $markerParts = (Get-Content -LiteralPath $buildMarkerPath -Raw).Trim() -split '\|', 2
+            $lastBuildHash = $markerParts[0]
+            if ($markerParts.Count -gt 1) { $lastBuildSize = $markerParts[1] }
+        }
+        $currentSize = if (Test-Path -LiteralPath $combinedTarget) { (Get-Item -LiteralPath $combinedTarget).Length } else { $null }
 
-        if ($downloadQueue.Count -eq 0 -and $removed -eq 0 -and $lastBuildHash -eq $manifestHash -and (Test-Path -LiteralPath $combinedTarget)) {
+        if ($downloadQueue.Count -eq 0 -and $removed -eq 0 -and $lastBuildHash -eq $manifestHash -and $null -ne $currentSize -and "$currentSize" -eq $lastBuildSize) {
             Write-Host 'Manifest and shards unchanged since the last build; keeping the existing KHDB file.'
         } else {
             Write-Host "Rebuilding combined KHDB file..."
@@ -198,7 +207,8 @@ function Update-ElysiumKhdb {
             foreach ($stale in $staleBackups) {
                 try { Remove-Item -LiteralPath $stale.FullName -Force } catch { Write-Warning "Could not remove old backup '$($stale.FullName)': $($_.Exception.Message)" }
             }
-            [System.IO.File]::WriteAllText($buildMarkerPath, $manifestHash, [System.Text.UTF8Encoding]::new($false))
+            $builtSize = (Get-Item -LiteralPath $combinedTarget).Length
+            [System.IO.File]::WriteAllText($buildMarkerPath, "$manifestHash|$builtSize", [System.Text.UTF8Encoding]::new($false))
             Write-Host ("KHDB merged file refreshed at {0}" -f $combinedTarget)
         }
         Write-Host "KHDB update completed successfully."
