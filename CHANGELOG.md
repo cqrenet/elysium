@@ -6,6 +6,11 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.6.0] — 2026-11-06
+
+### Added
+- **Weak-password age split, HTML report, and force-reset list:** `Test-PasswordQuality` only reports which accounts are weak; the live password filter only screens at change time and never rescans what's already set. For accounts whose password is in the KHDB, findings are now split by `pwdLastSet` into a current filter gap (set within `RecentPasswordWindowDays`, default 180) versus legacy backlog (older), privileged (`adminCount`) hits are flagged, and the run is diffed against the previous one for new/remediated/repeat offenders. Each run also writes a self-contained HTML report (filter-gap headline, stat cards, trend, age-split tables, remaining DSInternals hygiene findings) alongside the text and JSON reports, and, when any enabled account is weak, a `ForceReset` work list plus a reviewed (never auto-run) script that flags each account to change its password at next logon. New setting: `RecentPasswordWindowDays`.
+
 ## [2.5.0] — 2026-11-06
 
 ### Added
