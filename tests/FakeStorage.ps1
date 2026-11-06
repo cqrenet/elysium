@@ -3,6 +3,8 @@
 # - GET <bucket>/<key> serves $Root/<bucket>/<key>, 404 if missing.
 # - PUT stores the body only if it matches x-amz-content-sha256, else 400 BadDigest (as S3 does).
 # - Keys containing '/flaky/' answer 503 to their first GET; keys containing '/reject/' refuse PUTs.
+# - Keys containing '/short/' advertise the full Content-Length on their first GET, then close
+#   after all but the last byte. That is a truncated body with a success status, not an HTTP error.
 # Requests are logged as "<METHOD> <bucket>/<key>"; Get-FakeStorageLog drains the log.
 
 function Start-FakeStorage {
@@ -30,6 +32,10 @@ function Start-FakeStorage {
                     $gets[$key] = 1 + [int]$gets[$key]
                     if ($key -like '*/flaky/*' -and $gets[$key] -eq 1) {
                         $response.StatusCode = 503
+                    } elseif ($key -like '*/short/*' -and $gets[$key] -eq 1 -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+                        $bytes = [System.IO.File]::ReadAllBytes($path)
+                        $response.ContentLength64 = $bytes.Length
+                        if ($bytes.Length -gt 1) { $response.OutputStream.Write($bytes, 0, $bytes.Length - 1) }
                     } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
                         $bytes = [System.IO.File]::ReadAllBytes($path)
                         $response.ContentLength64 = $bytes.Length

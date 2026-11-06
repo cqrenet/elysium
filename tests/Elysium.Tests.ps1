@@ -438,6 +438,8 @@ Describe 'Storage transfers' {
         $remote = Join-Path $TestDrive 'store'
         New-Item -ItemType Directory -Path (Join-Path $remote 'bucket/flaky') -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $remote 'bucket/flaky/object.txt') -Value 'eventually'
+        New-Item -ItemType Directory -Path (Join-Path $remote 'bucket/short') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $remote 'bucket/short/object.txt') -Value 'complete-body' -NoNewline
         $server = Start-FakeStorage -Root $remote
         $s3 = Get-StorageConfig (New-S3Settings $server.Url)
         $body = [System.Text.Encoding]::UTF8.GetBytes('encrypted export bytes')
@@ -482,6 +484,13 @@ Describe 'Storage transfers' {
         $target = Join-Path $TestDrive 'flaky.txt'
         Invoke-StorageDownload -Storage $s3 -Key 'flaky/object.txt' -TargetPath $target 3>$null
         Get-Content -LiteralPath $target | Should -Be 'eventually'
+        Should -Invoke Start-Sleep -Times 1 -Exactly
+    }
+
+    It 'retries when a 200 response closes before Content-Length and keeps the complete body' {
+        $target = Join-Path $TestDrive 'short.txt'
+        Invoke-StorageDownload -Storage $s3 -Key 'short/object.txt' -TargetPath $target 3>$null
+        [System.IO.File]::ReadAllBytes($target) | Should -Be ([System.Text.Encoding]::UTF8.GetBytes('complete-body'))
         Should -Invoke Start-Sleep -Times 1 -Exactly
     }
 }

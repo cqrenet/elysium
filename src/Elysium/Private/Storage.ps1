@@ -230,6 +230,13 @@ function Invoke-StorageDownload {
                 $source = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
                 $target = [System.IO.File]::Create($TargetPath)
                 try { $source.CopyTo($target, 1048576) } finally { $target.Dispose(); $source.Dispose() }
+                # HttpClient reports a success status before the body is finished. A connection that
+                # closes early leaves a short file and CopyTo returns normally, so check the length
+                # the server advertised and retry like any other transient failure.
+                $expected = $response.Content.Headers.ContentLength
+                if ($null -ne $expected -and (Get-Item -LiteralPath $TargetPath).Length -ne $expected) {
+                    throw "body ended at $((Get-Item -LiteralPath $TargetPath).Length) bytes, Content-Length was $expected"
+                }
                 return
             } catch {
                 if ($permanent -or $attempt -ge 5) { throw "Download of '$Key' failed: $($_.Exception.Message)" }
