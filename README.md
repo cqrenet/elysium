@@ -24,13 +24,16 @@ Prior to v2.2.0, each script carried its own version number; those historical ve
 ---
 ## Operation
 ### Install and update
-This tool is provided in private git repository. Installation and updating is done with cloning and pulling from this repository.
+The code is public on [GitHub](https://github.com/cqrenet/elysium); installation and updating is done with cloning and pulling from there. `git clone` on a Windows host, or extract a downloaded zip - either way, run from a dedicated, trusted host.
 During first run, the tool will ask for passphrase that will be used to encrypt/decrypt sensitive content.
 After installation, edit ElysiumSettings.txt, check all variables and add domains to test.
 The tool runs on Windows PowerShell 5.1 (always present on Windows) or PowerShell 7 (`pwsh`); KHDB downloads run concurrently on both. The two DSInternals-driven workflows (menu options 2 and 3, `Test-WeakADPasswords.ps1` and `Extract-NTHashes.ps1`) load the legacy `ActiveDirectory` and `DSInternals` modules, so they relaunch themselves under Windows PowerShell when started from pwsh.
+`Elysium.ps1`'s menu is navigated with Up/Down + Enter (or a number key to jump straight to an item); Esc/Q exits. It falls back to a plain numbered prompt when there's no real console (input redirected, some IDE terminals).
 ### Update Known-Hashed Database (KHDB)
 Run script Elysium.ps1 as an administrator and choose option 1 (Update Known-Hashes Database).
-The updater pulls a manifest plus individual hash shards (two-hex prefix layout) from the configured storage (Azure Blob or S3-compatible), verifies each shard's size and SHA-256 against the manifest, replaces only changed shards, and rebuilds `khdb.txt` for local use. Shards no longer listed in the manifest are removed automatically. Up to `-MaxParallelTransfers` shards (default `5`) download concurrently on both Windows PowerShell 5.1 and PowerShell 7; override it when running the script directly (for example `.\Update-KHDB.ps1 -MaxParallelTransfers 8`). The KHDB credentials only need read access to the KHDB paths.
+The updater pulls a manifest plus individual hash shards (two-hex prefix layout) from the configured storage (Azure Blob or S3-compatible), verifies each shard's size and SHA-256 against the manifest, replaces only changed shards, and rebuilds `khdb.txt` for local use. Shards no longer listed in the manifest are removed automatically. Up to `-MaxParallelTransfers` shards (default `5`) download concurrently on both Windows PowerShell 5.1 and PowerShell 7; override it when running the script directly (for example `.\Update-KHDB.ps1 -MaxParallelTransfers 8`). The KHDB credentials only need read access to the KHDB paths. Rebuilding is skipped when the manifest and the existing `khdb.txt` are already in sync.
+
+Before a rebuild, the previous `khdb.txt` is moved aside as `khdb.txt.bak-<timestamp>` (instant, not a copy - a full KHDB is tens of GB). `KhdbBackupCount` in `ElysiumSettings.txt` sets how many of those are kept (default `1`; `0` keeps none).
 
 To publish an updated shard set (tool provider only), build the package with `tools/Prepare-KHDBStorage.ps1` and upload it with your storage provider's own CLI. The script runs on any OS with PowerShell 7 (`pwsh`) and needs no Elysium settings or credentials. It takes your sorted `khdb.txt` (or the directory/list of the Have I Been Pwned `.gz` slices), reconstructs the full 32-hex NTLM values (prefix + remainder), deduplicates, splits by the first two hex characters, and writes `manifest.json` (`version`, `shardPrefix`, and `sha256`/`size`/entry count per shard). Invalid or malformed entries are omitted and listed in `invalid-hashes.txt`.
 

@@ -30,7 +30,7 @@ ElysiumSettings.txt.sample     # Documented template for operators
 
 src/Elysium/Elysium.psd1       # Module manifest; ModuleVersion is the single source of the project version
 src/Elysium/Elysium.psm1       # Root module: dot-sources Private/ and Public/
-src/Elysium/Private/           # Helpers: Relaunch, Settings, Storage (Azure/S3/SigV4), Khdb, Crypto (ELY2), AdPreflight, PasswordQuality, Transcript
+src/Elysium/Private/           # Helpers: Relaunch, Settings, Storage (Azure/S3/SigV4), Khdb, KhdbMerge (compiled), Crypto (ELY2), AdPreflight, PasswordQuality, Transcript, Menu (Elysium.ps1's keypress logic)
 src/Elysium/Public/            # Exported cmdlets (root scripts are being converted into these)
 
 Update-KHDB.ps1                # Wrapper: relaunch under pwsh, then call Update-ElysiumKhdb (src/Elysium/Public)
