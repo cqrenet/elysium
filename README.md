@@ -61,7 +61,7 @@ When `-ForcePlainText` is specified the script automatically keeps a checkpoint 
 ### Test Weak AD passwords
 Run script Elysium.ps1 as an administrator and choose option 2 (Test Weak AD Passwords).
 The script lists domains in the same order as they appear in `ElysiumSettings.txt`. After you pick one, it prompts for credentials and validates them against the selected domain controller before running the password-quality test. To skip the domain prompt, name the domain: `.\Test-WeakADPasswords.ps1 -Domain contoso.local` (the same works for `.\Extract-NTHashes.ps1`). For fully non-interactive runs, call the cmdlets with a credential: `Import-Module .\src\Elysium; Test-ElysiumPasswordQuality -Domain contoso.local -Credential $cred` (or `Send-ElysiumHashExport`).
-The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation. Next to the text report, a `.json` file holds the same results as data: one finding per check (`WeakPassword`, `LMHash`, `DuplicatePasswordGroups`, ...) with each account's logon name and UPN, plus domain, DC, tool version and the number of accounts tested. The cmdlet also returns a summary object (domain, accounts tested, finding counts per check, report paths).
+The tool connects to the selected Domain Controller and compares accounts against KHDB (respecting the optional `CheckOnlyEnabledUsers` flag if configured). A timestamped text report is saved under `Reports`, and accounts with dictionary hits are also exported to a dedicated UPN-only text file to support follow-up automation. Next to the text report, a `.json` file holds the same results as data (one finding per check — `WeakPassword`, `LMHash`, `DuplicatePasswordGroups`, ... — with each account's logon name and UPN, plus domain, DC, tool version and the number of accounts tested) and an `.html` report presents them for a human reader (see [Weak password report](#weak-password-report) for how to read it). Set `RecentPasswordWindowDays` (default `180`) to the number of days a newly set password is expected to have already been screened by your live password filter; the report uses it to separate a current filter gap from legacy backlog. When any enabled account carries a known-weak password, the tool also writes a `*_ForceReset_*.txt` work list and a matching, operator-reviewed `*_ForceReset_*.ps1` script that flags each listed account to change its password at next logon (review it before running — it is never executed automatically). The cmdlet also returns a summary object (domain, accounts tested, finding counts per check, the weak total and the count set within the window, and the report and force-reset paths).
 The KHDB file is consumed by DSInternals as a sorted hash list with one NT hash per line (for example `HASH`). Do not include `:count` suffixes in `khdb.txt`; the packaging and update scripts normalize legacy `HASH:count` input to the hash-only format automatically.
 
 #### Least privileges for password-quality testing
@@ -160,7 +160,34 @@ It should, as it is extremely sensitive operation that should never happen outsi
 ---
 
 ## Weak password report
-This section explains in detail individual parts of weak password report.
+This section explains how to read the report and what each individual finding means.
+
+### Report files
+
+Each run writes these files under `Reports`, all timestamped and prefixed with the domain name:
+
+| File | Purpose |
+| --- | --- |
+| `<domain>_WeakPasswordReport_<ts>.html` | Human-readable report — start here. |
+| `<domain>_WeakPasswordReport_<ts>.txt` | Raw DSInternals `Test-PasswordQuality` output. |
+| `<domain>_WeakPasswordReport_<ts>.json` | The same findings as data, for SIEM or automation. |
+| `<domain>_DictionaryPasswordUPNs_<ts>.txt` | UPN-only list of dictionary (KHDB) hits. |
+
+When any **enabled** account carries a known-weak password, two more files appear: `<domain>_ForceReset_<ts>.txt` (one `sAMAccountName` per line) and `<domain>_ForceReset_<ts>.ps1`, a reviewed script that flags each listed account to change its password at next logon. The script is never run automatically — review it, then run it by hand on a host with the rights to reset those accounts.
+
+### Filter gap vs. legacy backlog
+
+A live password filter only acts when a password is *set or changed*; it never rescans passwords already in the directory. Elysium is that rescan. For the accounts whose password is in the KHDB, the HTML report leads with this distinction:
+
+* **Filter gap** — password set within the last `RecentPasswordWindowDays` (default 180 days) and already known-weak. The filter *should* have blocked this and did not. Investigate coverage: the filter DLL missing on a domain controller, an excluded OU, or an out-of-band / service-account change that bypassed it. Treat these first.
+* **Legacy backlog** — password set before that window. Expected: it predates the filter learning that hash. Drain it with a forced reset; it will not fix itself, because the filter never re-checks an existing password.
+* **Privileged** — any of the above on an account with `adminCount=1`. Weak privileged credentials are called out separately and should be fixed ahead of everything else.
+
+The headline states whether the window is clean (filter healthy) or not (a gap to chase). The **change since the previous run** cards compare this run against the most recent prior report for the same domain: *new* weak accounts, *remediated* ones, and *repeat* offenders still weak since last time — the backlog that is not shrinking.
+
+### Individual checks
+
+The checks below come from DSInternals `Test-PasswordQuality` and appear in the text and JSON reports and in the HTML report's *Other account-hygiene findings* table.
 
 1. Reversible Encryption:
     * ****Explanation:**** Accounts have passwords stored in a reversible format that can be decrypted.

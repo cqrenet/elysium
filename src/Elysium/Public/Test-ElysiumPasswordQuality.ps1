@@ -165,9 +165,18 @@ Remediation:
             try { $checkOnlyEnabledUsers = [System.Convert]::ToBoolean($ElysiumSettings['CheckOnlyEnabledUsers']) } catch { $checkOnlyEnabledUsers = $false }
         }
 
+        # Window that separates a live filter gap from legacy backlog in the report (defaults to 180 days).
+        $recentPasswordWindowDays = 180
+        if ($ElysiumSettings.ContainsKey('RecentPasswordWindowDays')) {
+            $parsedWindow = 0
+            if ([int]::TryParse($ElysiumSettings['RecentPasswordWindowDays'], [ref]$parsedWindow) -and $parsedWindow -gt 0) {
+                $recentPasswordWindowDays = $parsedWindow
+            }
+        }
+
         # Main script logic
         Write-Verbose "Starting main script execution..."
-        Invoke-WeakPasswordTest -DomainDetails $domainDetails -FilePath $WeakHashesSortedFilePath -CheckOnlyEnabledUsers:$checkOnlyEnabledUsers -DomainName $Domain -Credential $Credential
+        Invoke-WeakPasswordTest -DomainDetails $domainDetails -FilePath $WeakHashesSortedFilePath -CheckOnlyEnabledUsers:$checkOnlyEnabledUsers -DomainName $Domain -Credential $Credential -RecentPasswordWindowDays $recentPasswordWindowDays
     } catch {
         Write-Error ("An error occurred during script execution: {0}" -f $_.Exception.Message)
     } finally {

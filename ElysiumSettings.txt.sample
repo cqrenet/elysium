@@ -50,6 +50,11 @@ InstallationPath=
 ReportPathBase=Reports
 WeakPasswordsDatabase=khdb.txt
 # CheckOnlyEnabledUsers=true
+# A password set within this many days is expected to have been screened by the live password
+# filter already. A known-weak password newer than this is a live filter gap (DLL missing on a DC,
+# an OU exclusion, or an out-of-band change); older ones are legacy backlog that predates the filter
+# learning that hash. Drives the report's age split and filter-efficacy headline. Default 180 (~6 months).
+# RecentPasswordWindowDays=180
 
 # Lithnet Password Protection Settings
 ######################################

@@ -422,6 +422,79 @@ Describe 'Password-quality helpers' {
         Set-Content -LiteralPath $malformed -Value 'not-a-hash'
         { Resolve-DSInternalsWeakHashFile -Path $malformed } | Should -Throw '*invalid content at line 1*'
     }
+
+    It 'splits weak accounts by password age, flags privileged ones, and renders HTML' {
+        $findings = @(
+            [ordered]@{ check = 'WeakPassword'; count = 3; accounts = @(
+                    [ordered]@{ account = 'CONTOSO\fresh'; upn = 'fresh@contoso.com' }
+                    [ordered]@{ account = 'CONTOSO\old'; upn = '' }
+                    [ordered]@{ account = 'CONTOSO\admin'; upn = '' }
+                ) }
+            [ordered]@{ check = 'LMHash'; count = 1; accounts = @([ordered]@{ account = 'CONTOSO\lm'; upn = '' }) }
+        )
+        $now = Get-Date
+        $meta = @{
+            fresh = [pscustomobject]@{ Sam = 'fresh'; Upn = 'fresh@contoso.com'; PasswordLastSet = $now.AddDays(-10);  AdminCount = $false; Enabled = $true }
+            old   = [pscustomobject]@{ Sam = 'old';   Upn = '';                 PasswordLastSet = $now.AddDays(-400); AdminCount = $false; Enabled = $true }
+            admin = [pscustomobject]@{ Sam = 'admin'; Upn = '';                 PasswordLastSet = $now.AddDays(-5);   AdminCount = $true;  Enabled = $true }
+        }
+        $emptyReports = Join-Path $TestDrive 'noreports'
+        New-Item -ItemType Directory -Path $emptyReports | Out-Null
+
+        $a = Get-WeakPasswordAnalysis -Findings $findings -AccountMeta $meta -WindowDays 180 `
+            -ReportPathBase $emptyReports -DomainName 'contoso.local' -CurrentJsonPath (Join-Path $emptyReports 'x.json')
+
+        $a.WeakTotal | Should -Be 3
+        @($a.WeakRecent).Sam | Sort-Object | Should -Be @('admin', 'fresh')
+        @($a.WeakBacklog).Sam | Should -Be @('old')
+        @($a.PrivilegedWeak).Sam | Should -Be @('admin')
+        $a.Trend.HasPrior | Should -BeFalse
+
+        $html = New-PasswordQualityHtmlReport -Analysis $a -Findings $findings -Domain 'contoso.local' -DomainController 'dc1' -AccountsTested 100
+        $html | Should -Match 'Filter gap'
+        $html | Should -Match 'LMHash'
+    }
+
+    It 'computes new/remediated/repeat weak accounts against the previous report' {
+        $dir = Join-Path $TestDrive 'trend'
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        $prior = @{ findings = @(@{ check = 'WeakPassword'; count = 2; accounts = @(@{ account = 'CONTOSO\keep' }, @{ account = 'CONTOSO\gone' }) }) }
+        $prior | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $dir 'contoso.local_WeakPasswordReport_20200101-000000.json')
+
+        $findings = @([ordered]@{ check = 'WeakPassword'; count = 2; accounts = @(
+                    [ordered]@{ account = 'CONTOSO\keep'; upn = '' }
+                    [ordered]@{ account = 'CONTOSO\new'; upn = '' }
+                ) })
+        $a = Get-WeakPasswordAnalysis -Findings $findings -AccountMeta @{} -WindowDays 180 `
+            -ReportPathBase $dir -DomainName 'contoso.local' -CurrentJsonPath (Join-Path $dir 'contoso.local_WeakPasswordReport_20991231-235959.json')
+
+        $a.Trend.HasPrior | Should -BeTrue
+        @($a.Trend.NewWeak) | Should -Be @('new')
+        @($a.Trend.Remediated) | Should -Be @('gone')
+        @($a.Trend.Repeat) | Should -Be @('keep')
+    }
+
+    It 'writes a force-reset list and script for enabled weak accounts only' {
+        $now = Get-Date
+        $meta = @{
+            live = [pscustomobject]@{ Sam = 'live'; Upn = ''; PasswordLastSet = $now.AddDays(-5); AdminCount = $false; Enabled = $true }
+            dead = [pscustomobject]@{ Sam = 'dead'; Upn = ''; PasswordLastSet = $now.AddDays(-5); AdminCount = $false; Enabled = $false }
+        }
+        $findings = @([ordered]@{ check = 'WeakPassword'; count = 2; accounts = @(
+                    [ordered]@{ account = 'CONTOSO\live'; upn = '' }
+                    [ordered]@{ account = 'CONTOSO\dead'; upn = '' }
+                ) })
+        $dir = Join-Path $TestDrive 'reset'
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        $a = Get-WeakPasswordAnalysis -Findings $findings -AccountMeta $meta -WindowDays 180 -ReportPathBase $dir -DomainName 'contoso.local' -CurrentJsonPath (Join-Path $dir 'x.json')
+
+        $listPath = Join-Path $dir 'list.txt'
+        $scriptPath = Join-Path $dir 'reset.ps1'
+        $res = Export-ForceResetArtifacts -Analysis $a -Domain 'contoso.local' -ListPath $listPath -ScriptPath $scriptPath
+        $res.Count | Should -Be 1
+        (Get-Content -LiteralPath $listPath) | Should -Be @('live')   # disabled 'dead' excluded
+        (Get-Content -LiteralPath $scriptPath -Raw) | Should -Match 'ChangePasswordAtLogon \$true'
+    }
 }
 
 Describe 'KHDB publish -> update round trip' {

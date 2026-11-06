@@ -269,7 +269,8 @@ function Invoke-WeakPasswordTest {
         [string]$FilePath,
         [bool]$CheckOnlyEnabledUsers = $false,
         [System.Management.Automation.PSCredential]$Credential,
-        [string]$DomainName
+        [string]$DomainName,
+        [int]$RecentPasswordWindowDays = 180
     )
 
     $selectedDomain = Select-ElysiumDomain -DomainDetails $DomainDetails -Name $DomainName -Purpose 'test'
@@ -374,15 +375,38 @@ function Invoke-WeakPasswordTest {
         }
     }
 
-    # UPNs come from the accounts already replicated above - no extra LDAP lookup per account.
+    # Per-account metadata from the already-replicated accounts - no extra LDAP lookup. PasswordLastSet
+    # drives the "set before vs after the filter knew the hash" split; AdminCount flags privileged hits.
+    # PasswordLastSet/AdminCount/Enabled are read through property-name guards so a DSInternals object
+    # that lacks one degrades to "unknown age" instead of throwing under Set-StrictMode.
     $upnBySam = @{}
+    $accountMeta = @{}
     foreach ($account in @($accounts)) {
-        if ($account.SamAccountName -and $account.UserPrincipalName) { $upnBySam[[string]$account.SamAccountName] = [string]$account.UserPrincipalName }
+        $sam = [string]$account.SamAccountName
+        if ([string]::IsNullOrWhiteSpace($sam)) { continue }
+        $upn = [string]$account.UserPrincipalName
+        if (-not [string]::IsNullOrWhiteSpace($upn)) { $upnBySam[$sam] = $upn }
+        $plsProp = $account.PSObject.Properties['PasswordLastSet']
+        if (-not $plsProp) { $plsProp = $account.PSObject.Properties['PwdLastSet'] }
+        $acProp = $account.PSObject.Properties['AdminCount']
+        $enProp = $account.PSObject.Properties['Enabled']
+        $accountMeta[$sam] = [pscustomobject]@{
+            Sam             = $sam
+            Upn             = $upn
+            PasswordLastSet = if ($plsProp) { $plsProp.Value } else { $null }
+            AdminCount      = [bool]($acProp -and $acProp.Value)
+            Enabled         = if ($enProp) { [bool]$enProp.Value } else { $true }
+        }
     }
 
     # Report generation with dynamic content and UPNs
     $reportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_WeakPasswordReport_$timestamp.txt"
     $upnOnlyReportPath = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_DictionaryPasswordUPNs_$timestamp.txt"
+    # Set before the report try so the return value stays valid even if report writing throws.
+    $htmlReportPath = [System.IO.Path]::ChangeExtension($reportPath, '.html')
+    $forceResetListPath = $null
+    $forceResetScriptPath = $null
+    $analysis = $null
 
     # Build a lookup of SAM account names to UPNs for dictionary hits by leveraging structured results
     $dictionaryLogonNames = @()
@@ -469,19 +493,56 @@ function Invoke-WeakPasswordTest {
         }
         [System.IO.File]::WriteAllText($jsonReportPath, ($jsonReport | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
         Write-Host "JSON report saved to $jsonReportPath"
+
+        # Features 1-4: pwdLastSet age split, filter-efficacy headline, run-over-run trend, force-reset list.
+        $analysis = Get-WeakPasswordAnalysis -Findings $findings -AccountMeta $accountMeta -WindowDays $RecentPasswordWindowDays `
+            -ReportPathBase $reportPathBase -DomainName $selectedDomain.Name -CurrentJsonPath $jsonReportPath
+
+        $html = New-PasswordQualityHtmlReport -Analysis $analysis -Findings $findings -Domain $selectedDomain.Name `
+            -DomainController ([string]$selectedDomain.DC) -AccountsTested (@($accounts).Count)
+        [System.IO.File]::WriteAllText($htmlReportPath, $html, [System.Text.UTF8Encoding]::new($false))
+        Write-Host "HTML report saved to $htmlReportPath"
+
+        $resetListCandidate = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_ForceReset_$timestamp.txt"
+        $resetScriptCandidate = Join-Path -Path $reportPathBase -ChildPath "$($selectedDomain.Name)_ForceReset_$timestamp.ps1"
+        $resetArtifacts = Export-ForceResetArtifacts -Analysis $analysis -Domain $selectedDomain.Name -ListPath $resetListCandidate -ScriptPath $resetScriptCandidate
+        if ($resetArtifacts) {
+            $forceResetListPath = $resetArtifacts.ListPath
+            $forceResetScriptPath = $resetArtifacts.ScriptPath
+            Write-Host ("Force-reset work list saved to {0} ({1} enabled account(s))" -f $forceResetListPath, $resetArtifacts.Count)
+            Write-Host "Force-reset script (REVIEW before running) saved to $forceResetScriptPath"
+        }
     } catch {
         Write-Error ("Failed to save report: {0}" -f $_.Exception.Message)
+    }
+
+    if ($analysis) {
+        Write-Host ''
+        if (@($analysis.WeakRecent).Count -gt 0) {
+            Write-Host ("[!] FILTER GAP: {0} account(s) had a known-weak password set in the last {1} days - the password filter is not blocking these." -f @($analysis.WeakRecent).Count, $analysis.WindowDays) -ForegroundColor Red
+        } else {
+            Write-Host ("[+] No known-weak passwords set in the last {0} days - the live filter appears effective." -f $analysis.WindowDays) -ForegroundColor Green
+        }
+        if ($analysis.Trend.HasPrior) {
+            Write-Host ("    Trend vs previous run: {0} new, {1} remediated, {2} still weak." -f @($analysis.Trend.NewWeak).Count, @($analysis.Trend.Remediated).Count, @($analysis.Trend.Repeat).Count)
+        }
     }
 
     $findingCounts = [ordered]@{}
     foreach ($finding in $findings) { $findingCounts[$finding.check] = $finding.count }
     [pscustomobject]@{
-        Domain         = $selectedDomain.Name
-        AccountsTested = @($accounts).Count
-        Findings       = $findingCounts
-        ReportPath     = $reportPath
-        JsonReportPath = $jsonReportPath
-        UpnReportPath  = $upnOnlyReportPath
+        Domain                   = $selectedDomain.Name
+        AccountsTested           = @($accounts).Count
+        Findings                 = $findingCounts
+        WeakTotal                = if ($analysis) { $analysis.WeakTotal } else { 0 }
+        WeakSetWithinWindow      = if ($analysis) { @($analysis.WeakRecent).Count } else { 0 }
+        RecentPasswordWindowDays = $RecentPasswordWindowDays
+        ReportPath               = $reportPath
+        HtmlReportPath           = $htmlReportPath
+        JsonReportPath           = $jsonReportPath
+        UpnReportPath            = $upnOnlyReportPath
+        ForceResetListPath       = $forceResetListPath
+        ForceResetScriptPath     = $forceResetScriptPath
     }
 }
 
@@ -515,4 +576,363 @@ function ConvertTo-PasswordQualityFinding {
             [ordered]@{ check = $property.Name; count = $items.Count; accounts = $accounts.ToArray() }
         }
     }
+}
+
+function Get-PriorWeakPasswordSams {
+    # Loads the most recent prior <domain>_WeakPasswordReport_*.json and returns its WeakPassword SAMs,
+    # for the run-over-run trend. ponytail: prior-vs-current only (one file), not full history - enough
+    # for new/remediated/repeat; read more files here if a multi-run streak is ever wanted.
+    param([string]$ReportPathBase, [string]$DomainName, [string]$CurrentJsonPath)
+
+    $result = [pscustomobject]@{ HasPrior = $false; Path = $null; WeakSams = @() }
+    try {
+        if ([string]::IsNullOrWhiteSpace($ReportPathBase) -or -not (Test-Path -LiteralPath $ReportPathBase)) { return $result }
+        $currentLeaf = if ($CurrentJsonPath) { Split-Path -Path $CurrentJsonPath -Leaf } else { '' }
+        $pattern = '{0}_WeakPasswordReport_*.json' -f $DomainName
+        $candidates = @(Get-ChildItem -LiteralPath $ReportPathBase -Filter $pattern -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne $currentLeaf } |
+            Sort-Object Name -Descending)      # names are timestamped, so lexical order == chronological
+        if ($candidates.Count -eq 0) { return $result }
+
+        $prior = $candidates[0]
+        $json = Get-Content -LiteralPath $prior.FullName -Raw -ErrorAction Stop | ConvertFrom-Json
+        $sams = [System.Collections.Generic.List[string]]::new()
+        foreach ($finding in @($json.findings | Where-Object { $_.check -eq 'WeakPassword' })) {
+            foreach ($a in @($finding.accounts)) {
+                $sam = [string]$a.account -replace '^.*\\', ''
+                if (-not [string]::IsNullOrWhiteSpace($sam)) { $sams.Add($sam) }
+            }
+        }
+        $result.HasPrior = $true
+        $result.Path = $prior.FullName
+        $result.WeakSams = @($sams | Sort-Object -Unique)
+    } catch { }
+    return $result
+}
+
+function Get-WeakPasswordAnalysis {
+    # The filter prevents weak passwords at change time; it never rescans what is already set. So the
+    # value is the time axis: of the accounts whose password is in the KHDB, which were set *after* the
+    # filter knew that hash (a live gap) versus *before* (legacy backlog). Also flags privileged hits
+    # and diffs against the previous run.
+    param(
+        [Parameter(Mandatory)][AllowNull()]$Findings,
+        [hashtable]$AccountMeta = @{},
+        [int]$WindowDays = 180,
+        [string]$ReportPathBase,
+        [string]$DomainName,
+        [string]$CurrentJsonPath
+    )
+
+    $window = [math]::Abs($WindowDays)
+    $now = Get-Date
+    $cutoff = $now.AddDays(-$window)
+
+    $recent = [System.Collections.Generic.List[object]]::new()
+    $backlog = [System.Collections.Generic.List[object]]::new()
+    $unknown = [System.Collections.Generic.List[object]]::new()
+    $privileged = [System.Collections.Generic.List[object]]::new()
+    $currentSams = [System.Collections.Generic.List[string]]::new()
+
+    $weakFinding = @($Findings | Where-Object { $_.check -eq 'WeakPassword' }) | Select-Object -First 1
+    if ($weakFinding) {
+        foreach ($a in @($weakFinding.accounts)) {
+            $logon = [string]$a.account
+            $sam = $logon -replace '^.*\\', ''
+            if ([string]::IsNullOrWhiteSpace($sam)) { continue }
+            $currentSams.Add($sam)
+
+            $meta = $null
+            if ($AccountMeta.ContainsKey($sam)) { $meta = $AccountMeta[$sam] }
+            $pls = if ($meta) { $meta.PasswordLastSet } else { $null }
+            $adminCount = [bool]($meta -and $meta.AdminCount)
+            $enabled = if ($meta) { [bool]$meta.Enabled } else { $true }
+            $upn = ''
+            if ($meta -and $meta.Upn) { $upn = [string]$meta.Upn } elseif ($a.upn) { $upn = [string]$a.upn }
+
+            $ageDays = $null
+            $bucket = 'Unknown'
+            if ($pls -is [datetime]) {
+                $ageDays = [int][math]::Floor(($now - $pls).TotalDays)
+                $bucket = if ($pls -ge $cutoff) { 'Recent' } else { 'Backlog' }
+            }
+
+            $rec = [pscustomobject]@{
+                Sam = $sam; Logon = $logon; Upn = $upn; PasswordLastSet = $pls
+                AgeDays = $ageDays; AdminCount = $adminCount; Enabled = $enabled; Bucket = $bucket
+            }
+            switch ($bucket) {
+                'Recent'  { $recent.Add($rec) }
+                'Backlog' { $backlog.Add($rec) }
+                default   { $unknown.Add($rec) }
+            }
+            if ($adminCount) { $privileged.Add($rec) }
+        }
+    }
+
+    $prior = Get-PriorWeakPasswordSams -ReportPathBase $ReportPathBase -DomainName $DomainName -CurrentJsonPath $CurrentJsonPath
+    $cmp = [System.StringComparer]::OrdinalIgnoreCase
+    $priorSet = [System.Collections.Generic.HashSet[string]]::new([string[]]@($prior.WeakSams), $cmp)
+    $curSet = [System.Collections.Generic.HashSet[string]]::new($cmp)
+    foreach ($s in $currentSams) { [void]$curSet.Add($s) }
+    $newWeak = @(@($curSet) | Where-Object { -not $priorSet.Contains($_) } | Sort-Object)
+    $remediated = @(@($prior.WeakSams) | Where-Object { -not $curSet.Contains($_) } | Sort-Object)
+    $repeat = @(@($curSet) | Where-Object { $priorSet.Contains($_) } | Sort-Object)
+
+    [pscustomobject]@{
+        WindowDays     = $window
+        GeneratedAt    = $now
+        WeakTotal      = $curSet.Count
+        WeakRecent     = $recent
+        WeakBacklog    = $backlog
+        WeakUnknown    = $unknown
+        PrivilegedWeak = $privileged
+        Trend          = [pscustomobject]@{
+            HasPrior       = $prior.HasPrior
+            PriorPath      = $prior.Path
+            PriorWeakTotal = @($prior.WeakSams).Count
+            NewWeak        = $newWeak
+            Remediated     = $remediated
+            Repeat         = $repeat
+            Delta          = ($curSet.Count - @($prior.WeakSams).Count)
+        }
+    }
+}
+
+function Export-ForceResetArtifacts {
+    # The filter cannot fix a password already set; only a reset can. Writes the enabled weak accounts
+    # as a plain SAM work list plus a reviewed, NOT auto-run, script that flags each to change at next
+    # logon. Operator reviews and runs the script by hand. Returns $null when there is nothing to reset.
+    param(
+        [Parameter(Mandatory)]$Analysis,
+        [string]$Domain,
+        [string]$ListPath,
+        [string]$ScriptPath
+    )
+
+    $records = @()
+    $records += @($Analysis.WeakRecent)
+    $records += @($Analysis.WeakBacklog)
+    $records += @($Analysis.WeakUnknown)
+    # Only enabled accounts are worth resetting; disabled ones carry no live logon risk.
+    $targets = @($records | Where-Object { $_.Enabled } | Sort-Object Sam -Unique)
+    if ($targets.Count -eq 0) { return $null }
+    $sams = @($targets | ForEach-Object { $_.Sam })
+
+    [System.IO.File]::WriteAllLines($ListPath, [string[]]$sams, [System.Text.UTF8Encoding]::new($false))
+
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('# Elysium force-reset script - REVIEW BEFORE RUNNING.')
+    [void]$sb.AppendLine('# Flags each listed account so the user must change their password at next logon.')
+    [void]$sb.AppendLine('# Every account here holds a password found in the known-compromised hash database.')
+    [void]$sb.AppendLine(('# Domain: {0}   Generated: {1}   Accounts: {2}' -f $Domain, (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $sams.Count))
+    [void]$sb.AppendLine('# Requires the RSAT ActiveDirectory module and rights to reset these accounts.')
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine("`$ErrorActionPreference = 'Stop'")
+    [void]$sb.AppendLine('Import-Module ActiveDirectory')
+    [void]$sb.AppendLine('$accounts = @(')
+    foreach ($s in $sams) {
+        [void]$sb.AppendLine(("    '{0}'," -f ($s -replace "'", "''")))
+    }
+    [void]$sb.AppendLine(')')
+    [void]$sb.AppendLine('foreach ($sam in $accounts) {')
+    [void]$sb.AppendLine('    try {')
+    [void]$sb.AppendLine('        Set-ADUser -Identity $sam -ChangePasswordAtLogon $true')
+    [void]$sb.AppendLine('        Write-Host "[+] $sam flagged to change password at next logon."')
+    [void]$sb.AppendLine('    } catch {')
+    [void]$sb.AppendLine('        Write-Warning "[-] $sam : $($_.Exception.Message)"')
+    [void]$sb.AppendLine('    }')
+    [void]$sb.AppendLine('}')
+    [System.IO.File]::WriteAllText($ScriptPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+
+    return [pscustomobject]@{ ListPath = $ListPath; ScriptPath = $ScriptPath; Count = $sams.Count }
+}
+
+function Get-ElysiumReportCss {
+    # Self-contained, light/dark via prefers-color-scheme. ponytail: inline CSS, no JS, no libraries.
+    @'
+:root{--bg:#f6f7f9;--fg:#1a1d21;--muted:#6b7280;--card:#fff;--line:#e5e7eb;--bad:#c0392b;--badbg:#fdecea;--good:#1e7e45;--goodbg:#e8f5ee}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--fg:#e6e8eb;--muted:#9aa3ad;--card:#171a20;--line:#2a2f37;--bad:#ff6b5e;--badbg:#2a1715;--good:#5bd98a;--goodbg:#13241a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:24px 16px 56px}
+header h1{margin:0 0 4px;font-size:22px}
+.sub{color:var(--muted);margin:0 0 20px;font-size:13px}
+h2{font-size:17px;margin:28px 0 10px}
+h2.warn{color:var(--bad)}
+.verdict{border:1px solid var(--line);border-left-width:5px;border-radius:8px;padding:14px 16px;margin:8px 0 4px;background:var(--card)}
+.verdict h2{margin:0 0 6px}
+.verdict.bad{border-left-color:var(--bad);background:var(--badbg)}
+.verdict.good{border-left-color:var(--good);background:var(--goodbg)}
+.verdict.bad h2{color:var(--bad)}.verdict.good h2{color:var(--good)}
+.verdict p{margin:0;font-size:14px}
+.stats{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
+.card{flex:1 1 140px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.card .v{font-size:26px;font-weight:700}
+.card .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.card.bad .v{color:var(--bad)}.card.good .v{color:var(--good)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{background:rgba(127,127,127,.08);font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
+tr:last-child td{border-bottom:none}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.small{font-size:12px;color:var(--muted)}
+.muted{color:var(--muted);font-size:13px}
+.badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600}
+.badge.priv{background:var(--badbg);color:var(--bad)}
+.badge.dis{background:rgba(127,127,127,.15);color:var(--muted)}
+footer{margin-top:36px;border-top:1px solid var(--line);padding-top:12px}
+'@
+}
+
+function New-ElysiumStatCard {
+    param([string]$Label, $Value, [string]$Class = '')
+    return ('<div class="card {0}"><div class="v">{1}</div><div class="l">{2}</div></div>' -f `
+        $Class, [System.Net.WebUtility]::HtmlEncode([string]$Value), [System.Net.WebUtility]::HtmlEncode($Label))
+}
+
+function Format-WeakRecordTableHtml {
+    param($Records, [string]$EmptyText = 'None.')
+    $recs = @($Records)
+    if ($recs.Count -eq 0) { return ('<p class="muted">{0}</p>' -f [System.Net.WebUtility]::HtmlEncode($EmptyText)) }
+
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('<table><thead><tr><th>Account</th><th>UPN</th><th>Password last set</th><th>Age (days)</th><th>Flags</th></tr></thead><tbody>')
+    foreach ($r in ($recs | Sort-Object @{ Expression = { $_.AdminCount }; Descending = $true }, @{ Expression = { $_.AgeDays } })) {
+        $pls = if ($r.PasswordLastSet -is [datetime]) { $r.PasswordLastSet.ToString('yyyy-MM-dd') } else { 'unknown' }
+        $age = if ($null -ne $r.AgeDays) { [string]$r.AgeDays } else { '&mdash;' }
+        $flags = @()
+        if ($r.AdminCount) { $flags += '<span class="badge priv">privileged</span>' }
+        if (-not $r.Enabled) { $flags += '<span class="badge dis">disabled</span>' }
+        [void]$sb.AppendLine(('<tr><td class="mono">{0}</td><td class="mono">{1}</td><td>{2}</td><td class="num">{3}</td><td>{4}</td></tr>' -f `
+            [System.Net.WebUtility]::HtmlEncode($r.Sam),
+            [System.Net.WebUtility]::HtmlEncode($r.Upn),
+            $pls, $age, ($flags -join ' ')))
+    }
+    [void]$sb.AppendLine('</tbody></table>')
+    return $sb.ToString()
+}
+
+function New-PasswordQualityHtmlReport {
+    # "Nicer report": a self-contained HTML page built around the filter-gap story, with the age split,
+    # trend, privileged callout and the remaining DSInternals hygiene findings. Plain text + JSON still
+    # ship alongside it. All account-derived values are HTML-encoded (the page may be opened in a browser).
+    param(
+        [Parameter(Mandatory)]$Analysis,
+        [AllowNull()]$Findings,
+        [string]$Domain,
+        [string]$DomainController,
+        [int]$AccountsTested
+    )
+
+    $enc = { param($s) [System.Net.WebUtility]::HtmlEncode([string]$s) }
+    $recent = @($Analysis.WeakRecent); $backlog = @($Analysis.WeakBacklog); $unknown = @($Analysis.WeakUnknown)
+    $priv = @($Analysis.PrivilegedWeak)
+    $win = $Analysis.WindowDays
+    $gen = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+
+    if ($recent.Count -gt 0) {
+        $vClass = 'bad'
+        $vTitle = ('Filter gap &mdash; {0} weak password(s) set in the last {1} days' -f $recent.Count, $win)
+        $vBody = 'These accounts hold a password from the known-compromised database that was set <strong>after</strong> it became known. The live password filter did not block them. Check filter coverage: the DLL missing on a domain controller, an OU exclusion, or out-of-band / service-account changes.'
+    } else {
+        $vClass = 'good'
+        $vTitle = ('No weak passwords set in the last {0} days' -f $win)
+        $vBody = 'Every known-weak password predates the window, so the live filter appears to be blocking new weak passwords. The findings below are standing backlog to drain with a forced reset.'
+    }
+
+    $desc = @{
+        WeakPassword               = 'Password hash found in the known-compromised (KHDB) database.'
+        DuplicatePasswordGroups    = 'Accounts sharing the same password (password reuse).'
+        LMHash                     = 'Weak LM hash stored - legacy, trivially cracked.'
+        ClearTextPassword          = 'Password stored with reversible encryption.'
+        EmptyPassword              = 'No password set.'
+        PasswordNotRequired        = 'PASSWD_NOTREQD set - the account may have a blank password.'
+        PasswordNeverExpires       = 'Password never expires.'
+        AESKeysMissing             = 'Kerberos AES keys missing - password unchanged since the 2008 functional level.'
+        PreAuthNotRequired         = 'Kerberos pre-authentication disabled (AS-REP roastable).'
+        Kerberoastable             = 'Has a service principal name (Kerberoastable).'
+        DESEncryptionOnly          = 'Restricted to weak DES encryption.'
+        SmartCardUsersWithPassword = 'Smart-card-required account that still has a password hash.'
+    }
+
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">')
+    [void]$sb.AppendLine(('<title>Elysium weak-password report &mdash; {0}</title>' -f (& $enc $Domain)))
+    [void]$sb.AppendLine('<style>' + (Get-ElysiumReportCss) + '</style></head><body><main>')
+    [void]$sb.AppendLine(('<header><h1>Elysium weak-password report</h1><p class="sub">{0} &middot; DC {1} &middot; {2} accounts tested &middot; generated {3}</p></header>' -f `
+        (& $enc $Domain), (& $enc $DomainController), $AccountsTested, (& $enc $gen)))
+
+    [void]$sb.AppendLine(('<section class="verdict {0}"><h2>{1}</h2><p>{2}</p></section>' -f $vClass, $vTitle, $vBody))
+
+    [void]$sb.AppendLine('<section class="stats">')
+    [void]$sb.AppendLine((New-ElysiumStatCard -Label 'Weak total' -Value $Analysis.WeakTotal))
+    [void]$sb.AppendLine((New-ElysiumStatCard -Label ("Set in last $win d") -Value $recent.Count -Class $(if ($recent.Count) { 'bad' } else { 'good' })))
+    [void]$sb.AppendLine((New-ElysiumStatCard -Label 'Legacy backlog' -Value $backlog.Count))
+    [void]$sb.AppendLine((New-ElysiumStatCard -Label 'Privileged' -Value $priv.Count -Class $(if ($priv.Count) { 'bad' } else { '' })))
+    if ($unknown.Count) { [void]$sb.AppendLine((New-ElysiumStatCard -Label 'Unknown age' -Value $unknown.Count)) }
+    [void]$sb.AppendLine('</section>')
+
+    $t = $Analysis.Trend
+    if ($t.HasPrior) {
+        $deltaTxt = if ($t.Delta -gt 0) { "+$($t.Delta)" } else { [string]$t.Delta }
+        [void]$sb.AppendLine('<h2>Change since the previous run</h2><section class="stats">')
+        [void]$sb.AppendLine((New-ElysiumStatCard -Label 'New' -Value @($t.NewWeak).Count -Class $(if (@($t.NewWeak).Count) { 'bad' } else { 'good' })))
+        [void]$sb.AppendLine((New-ElysiumStatCard -Label 'Remediated' -Value @($t.Remediated).Count -Class 'good'))
+        [void]$sb.AppendLine((New-ElysiumStatCard -Label 'Still weak (repeat)' -Value @($t.Repeat).Count))
+        [void]$sb.AppendLine((New-ElysiumStatCard -Label 'Net change' -Value $deltaTxt))
+        [void]$sb.AppendLine('</section>')
+    } else {
+        [void]$sb.AppendLine('<p class="muted">No previous report found for this domain &mdash; trend starts from the next run.</p>')
+    }
+
+    if ($priv.Count -gt 0) {
+        [void]$sb.AppendLine('<section><h2 class="warn">Privileged accounts with weak passwords</h2>')
+        [void]$sb.AppendLine((Format-WeakRecordTableHtml -Records $priv))
+        [void]$sb.AppendLine('</section>')
+    }
+
+    [void]$sb.AppendLine(('<section><h2 class="warn">Weak password set in the last {0} days (filter gap)</h2>' -f $win))
+    [void]$sb.AppendLine((Format-WeakRecordTableHtml -Records $recent -EmptyText 'None - nothing slipped past the filter in this window.'))
+    [void]$sb.AppendLine('</section>')
+
+    [void]$sb.AppendLine('<section><h2>Legacy backlog (password set before the window)</h2>')
+    [void]$sb.AppendLine((Format-WeakRecordTableHtml -Records $backlog))
+    [void]$sb.AppendLine('</section>')
+
+    if ($unknown.Count -gt 0) {
+        [void]$sb.AppendLine('<section><h2>Weak, password age unknown</h2>')
+        [void]$sb.AppendLine((Format-WeakRecordTableHtml -Records $unknown))
+        [void]$sb.AppendLine('</section>')
+    }
+
+    $other = @($Findings | Where-Object { $_.check -ne 'WeakPassword' })
+    [void]$sb.AppendLine('<section><h2>Other account-hygiene findings</h2>')
+    if ($other.Count -eq 0) {
+        [void]$sb.AppendLine('<p class="muted">None.</p>')
+    } else {
+        [void]$sb.AppendLine('<table><thead><tr><th>Check</th><th>Count</th><th>What it means</th><th>Sample accounts</th></tr></thead><tbody>')
+        foreach ($f in ($other | Sort-Object { - [int]$_.count })) {
+            $names = [System.Collections.Generic.List[string]]::new()
+            foreach ($a in @($f.accounts)) {
+                if ($a -is [string]) { $names.Add($a) }
+                elseif ($a -is [System.Collections.IEnumerable] -and $a -isnot [System.Collections.IDictionary]) {
+                    foreach ($m in $a) { if ($m.account) { $names.Add([string]$m.account) } }
+                } elseif ($a.account) { $names.Add([string]$a.account) }
+                if ($names.Count -ge 12) { break }
+            }
+            $sample = (@($names) | Select-Object -First 12 | ForEach-Object { & $enc $_ }) -join ', '
+            if (@($f.accounts).Count -gt $names.Count) { $sample += ' &hellip;' }
+            $d = if ($desc.ContainsKey([string]$f.check)) { $desc[[string]$f.check] } else { '' }
+            [void]$sb.AppendLine(('<tr><td class="mono">{0}</td><td class="num">{1}</td><td>{2}</td><td class="mono small">{3}</td></tr>' -f `
+                (& $enc $f.check), $f.count, (& $enc $d), $sample))
+        }
+        [void]$sb.AppendLine('</tbody></table>')
+    }
+    [void]$sb.AppendLine('</section>')
+
+    [void]$sb.AppendLine('<footer><p class="muted">Elysium &middot; a detective control for passwords already set in AD. The password filter prevents weak passwords at change time; this report finds the ones already there.</p></footer>')
+    [void]$sb.AppendLine('</main></body></html>')
+    return $sb.ToString()
 }
