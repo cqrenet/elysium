@@ -82,9 +82,13 @@ function Test-ReplicationPermissions {
         # Look up by DistinguishedName (unambiguous) rather than re-deriving the username format.
         $adUserWithTokenGroups = Get-ADUser -Identity $adUser.DistinguishedName -Server $Server -Credential $Credential `
             -Properties tokenGroups -ErrorAction Stop
-        foreach ($sidBytes in $adUserWithTokenGroups.tokenGroups) {
-            $sid = New-Object System.Security.Principal.SecurityIdentifier(@([byte[]]$sidBytes), 0)
-            [void]$callerSids.Add($sid.Value)
+        # The ActiveDirectory module returns these as SecurityIdentifier objects (raw byte arrays on some builds).
+        foreach ($tokenGroup in $adUserWithTokenGroups.tokenGroups) {
+            if ($tokenGroup -is [System.Security.Principal.SecurityIdentifier]) {
+                [void]$callerSids.Add($tokenGroup.Value)
+            } else {
+                [void]$callerSids.Add((New-Object System.Security.Principal.SecurityIdentifier(@([byte[]]$tokenGroup), 0)).Value)
+            }
         }
 
         # adminCount=1 means SDProp is managing this account; it runs every 60 min and can
