@@ -203,3 +203,9 @@ namespace Elysium
 }
 '@
 }
+
+# A compiled type cannot be replaced inside a running process. If an older build of this file already
+# defined it (module re-imported or scripts updated in a long-lived console), fail with the fix.
+if (-not [Elysium.KhdbText].GetMethod('Inspect')) {
+    throw 'Elysium.KhdbText is loaded from an older build in this PowerShell process. Close this window and start a new one.'
+}
