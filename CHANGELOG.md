@@ -6,7 +6,7 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
-## [Unreleased]
+## [2.5.0] — 2026-11-06
 
 ### Added
 - **`Elysium.ps1` menu:** navigate with Up/Down + Enter, or still type a number directly; Esc/Q exits. Falls back to the old plain numbered prompt when input is redirected or the host has no real console. The keypress logic (`Resolve-ElysiumMenuKeyPress`) is a separate, Pester-tested function.
@@ -15,6 +15,12 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 - **KHDB backups:** the previous `khdb.txt` is now moved aside instead of copied (instant instead of minutes for a 40+ GB file), and only the newest one is kept. `KhdbBackupCount` in `ElysiumSettings.txt` sets how many (default 1, `0` = none; was a fixed 5).
 
 ### Fixed
+- **Replication pre-check crashed on some hosts:** the SID pre-check cast every `tokenGroups` entry to `byte[]`, which fails when the ActiveDirectory module already returns `SecurityIdentifier` objects ("Cannot convert ... to System.Byte[]"), so the check was skipped with a warning instead of running. Both return shapes are now handled.
+- **Rebuild skipped when it shouldn't be:** the skip check only compared the manifest hash in `khdb-build.sha256`; it never verified `khdb.txt` on disk still matched what that hash was recorded for. `khdb.txt` is tracked in git while the shard cache and the marker are not, so anything that replaced `khdb.txt`'s content without touching the manifest or shards (a `git checkout`/`pull` among them) left the updater trusting a stale marker and keeping the wrong file. The marker now also records the built file's size, and both must match to skip.
+- **A stale compiled type failed with a confusing error:** `Add-Type` cannot redefine a type an older build of a script already loaded into the session, so after updating the module files in a long-lived PowerShell window, `Resolve-DSInternalsWeakHashFile` could fail with "does not contain a method named 'Inspect'" instead of a clear message. It now checks for the newest method and tells the operator to start a new session.
+- **A download that closed before its advertised length was accepted as complete:** `HttpClient`'s async read returns once headers arrive, so a connection that closed early left a short file without throwing. The written length is now compared against `Content-Length` and a mismatch is retried like any other transient failure.
+- The tracked sample `khdb.txt` was not sorted, was mixed case, and had a duplicate - present since the first commit, and it failed the repo's own validator. Harmless once a real KHDB is downloaded, but running `Test-WeakADPasswords` before the first `Update-KHDB` hit "not sorted alphabetically at line 4".
+- Typo in the DCSync diagnostic dump header ("ELYSLUM").
 - **`Test-WeakADPasswords` spent hours checking the KHDB before testing:** `Resolve-DSInternalsWeakHashFile` validated the whole file with a per-line PowerShell loop, the same pattern that made the KHDB rebuild take hours. It now uses the compiled checker (`Elysium.KhdbText.Inspect` / `WriteNormalized`): one pass over a clean KHDB (about 1.6 s per 5 million hashes on pwsh 7) and no temporary copy. Files with blank or whitespace-padded lines are now normalized too; before, they were passed to DSInternals unchanged.
 - **KHDB rebuild took hours (or days) on Windows PowerShell 5.1:** the merged `khdb.txt` was built and validated with PowerShell code per hash line - a function call, a regex, a split and an uppercase conversion for every line, then a second regex pass to validate. Full-size KHDBs have hundreds of millions of lines. The merge and the validation now run in a small compiled class (`Elysium.KhdbMerger` / `Elysium.KhdbText`, built with `Add-Type` on 5.1 and 7, no extra install) with the same rules. 5 million hashes merge in about 4 s on pwsh 7; the 5.1 timing is still to be measured. The rebuild also prints progress per shard.
 - **Unchanged KHDB is no longer rebuilt:** if the manifest is identical to the last successful build, no shard was downloaded or removed, and `khdb.txt` exists, the update keeps the current file. The `khdb-build.sha256` marker is written only after a successful build.
