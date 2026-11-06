@@ -82,8 +82,8 @@ UsageBeaconTimeoutSeconds=5
 #################
 # Domain 1 (domain1.local)
 Domain1Name=domain1.local
-Domain1DC=xxx.domain1.local
+Domain1DC=dc01.domain1.local
 
 # Domain 2 (domain2.com)
 Domain2Name=domain2.com
-Domain2DC=yyy.domain2.com
+Domain2DC=dc01.domain2.com
