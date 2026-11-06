@@ -8,6 +8,9 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ## [Unreleased]
 
+### Changed
+- **KHDB backups:** the previous `khdb.txt` is now moved aside instead of copied (instant instead of minutes for a 40+ GB file), and only the newest one is kept. `KhdbBackupCount` in `ElysiumSettings.txt` sets how many (default 1, `0` = none; was a fixed 5).
+
 ### Fixed
 - **`Test-WeakADPasswords` spent hours checking the KHDB before testing:** `Resolve-DSInternalsWeakHashFile` validated the whole file with a per-line PowerShell loop, the same pattern that made the KHDB rebuild take hours. It now uses the compiled checker (`Elysium.KhdbText.Inspect` / `WriteNormalized`): one pass over a clean KHDB (about 1.6 s per 5 million hashes on pwsh 7) and no temporary copy. Files with blank or whitespace-padded lines are now normalized too; before, they were passed to DSInternals unchanged.
 - **KHDB rebuild took hours (or days) on Windows PowerShell 5.1:** the merged `khdb.txt` was built and validated with PowerShell code per hash line - a function call, a regex, a split and an uppercase conversion for every line, then a second regex pass to validate. Full-size KHDBs have hundreds of millions of lines. The merge and the validation now run in a small compiled class (`Elysium.KhdbMerger` / `Elysium.KhdbText`, built with `Add-Type` on 5.1 and 7, no extra install) with the same rules. 5 million hashes merge in about 4 s on pwsh 7; the 5.1 timing is still to be measured. The rebuild also prints progress per shard.

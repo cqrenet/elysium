@@ -6,7 +6,8 @@ function Update-ElysiumKhdb {
     .DESCRIPTION
     Fetches the manifest from the configured storage (Azure Blob via SAS, or S3-compatible via
     SigV4), downloads only shards whose checksum changed, removes shards no longer listed, and
-    atomically replaces the merged KHDB file (keeping the 5 most recent backups).
+    replaces the merged KHDB file. The previous file is kept as khdb.txt.bak-<time>; KhdbBackupCount (default 1,
+    0 = none) sets how many backups stay.
 
     .PARAMETER MaxParallelTransfers
     Shards downloaded concurrently (each in its own runspace), on Windows PowerShell 5.1 and 7 alike.
@@ -146,6 +147,12 @@ function Update-ElysiumKhdb {
         Copy-Item -LiteralPath $manifestTempPath -Destination $localManifestPath -Force
         Write-Host ("Manifest saved locally to {0}" -f $localManifestPath)
 
+        $backupRetentionCount = 1
+        $backupSetting = $settings['KhdbBackupCount']
+        if (-not [string]::IsNullOrWhiteSpace($backupSetting) -and -not ([int]::TryParse($backupSetting, [ref]$backupRetentionCount) -and $backupRetentionCount -ge 0)) {
+            throw "KhdbBackupCount must be a whole number of 0 or more (got '$backupSetting')."
+        }
+
         $khdbName = if ([string]::IsNullOrWhiteSpace($settings['WeakPasswordsDatabase'])) { 'khdb.txt' } else { $settings['WeakPasswordsDatabase'] }
         $combinedTarget = Join-Path -Path $installPath -ChildPath $khdbName
         $combinedTemp = Join-Path -Path $tmpDir.FullName -ChildPath 'khdb-combined.txt'
@@ -165,23 +172,32 @@ function Update-ElysiumKhdb {
             Merge-ShardsToFile -Manifest $manifest -ShardsRoot $localShardRoot -TargetPath $combinedTemp
             Validate-KHDBFile -Path $combinedTemp
 
+            $backupPath = $null
             if (Test-Path -LiteralPath $combinedTarget) {
-                $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
-                $backupPath = Join-Path -Path $installPath -ChildPath ("$khdbName.bak-$ts")
-                Copy-Item -LiteralPath $combinedTarget -Destination $backupPath -Force
-                Write-Host ("Existing KHDB backed up to {0}" -f $backupPath)
-
-                # Each run adds one full-size backup; keep only the most recent few so a recurring
-                # scheduled job doesn't silently accumulate backups until the disk fills up.
-                $backupRetentionCount = 5
-                $staleBackups = Get-ChildItem -LiteralPath $installPath -Filter "$khdbName.bak-*" -File -ErrorAction SilentlyContinue |
-                    Sort-Object Name -Descending | Select-Object -Skip $backupRetentionCount
-                foreach ($stale in $staleBackups) {
-                    try { Remove-Item -LiteralPath $stale.FullName -Force } catch { Write-Warning "Could not remove old backup '$($stale.FullName)': $($_.Exception.Message)" }
+                if ($backupRetentionCount -gt 0) {
+                    # A move is instant on the same volume; copying a full-size KHDB took minutes.
+                    $backupPath = Join-Path -Path $installPath -ChildPath ("$khdbName.bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+                    Move-Item -LiteralPath $combinedTarget -Destination $backupPath -Force
+                    Write-Host ("Existing KHDB backed up to {0}" -f $backupPath)
+                } else {
+                    Remove-Item -LiteralPath $combinedTarget -Force
                 }
             }
 
-            Move-Item -LiteralPath $combinedTemp -Destination $combinedTarget -Force
+            try {
+                Move-Item -LiteralPath $combinedTemp -Destination $combinedTarget -Force
+            } catch {
+                if ($backupPath) { Move-Item -LiteralPath $backupPath -Destination $combinedTarget -Force }
+                throw
+            }
+
+            # Each run adds one full-size backup; keep only the newest few so a recurring scheduled job
+            # doesn't silently fill the disk.
+            $staleBackups = Get-ChildItem -LiteralPath $installPath -Filter "$khdbName.bak-*" -File -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending | Select-Object -Skip $backupRetentionCount
+            foreach ($stale in $staleBackups) {
+                try { Remove-Item -LiteralPath $stale.FullName -Force } catch { Write-Warning "Could not remove old backup '$($stale.FullName)': $($_.Exception.Message)" }
+            }
             [System.IO.File]::WriteAllText($buildMarkerPath, $manifestHash, [System.Text.UTF8Encoding]::new($false))
             Write-Host ("KHDB merged file refreshed at {0}" -f $combinedTarget)
         }

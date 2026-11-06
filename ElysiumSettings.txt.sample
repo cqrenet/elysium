@@ -41,6 +41,8 @@ s3ForcePathStyle = true
 KhdbManifestPath=khdb/manifest.json
 KhdbShardPrefix=khdb/shards
 KhdbLocalShardDir=khdb-shards
+# Previous khdb.txt copies (khdb.txt.bak-*) kept after a rebuild. Each is full size (tens of GB). 0 = none.
+KhdbBackupCount=1
 
 # Application Settings
 ######################

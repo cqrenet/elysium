@@ -55,7 +55,7 @@ Key sections:
 - `StorageProvider` — `Azure` or `S3`
 - Azure: `storageAccountName`, `containerName`, `sasToken`
 - S3: `s3EndpointUrl`, `s3Region`, `s3BucketName`, `s3AccessKeyId`, `s3SecretAccessKey`, `s3ForcePathStyle`
-- KHDB layout: `KhdbManifestPath`, `KhdbShardPrefix`, `KhdbLocalShardDir`
+- KHDB layout: `KhdbManifestPath`, `KhdbShardPrefix`, `KhdbLocalShardDir`, `KhdbBackupCount`
 - App: `InstallationPath`, `ReportPathBase`, `WeakPasswordsDatabase`, `CheckOnlyEnabledUsers`
 - Lithnet: `LithnetStorePath`, `LithnetSyncHibp`, `LithnetHashSources`, `LithnetPlaintextSources`, `LithnetBannedWordSources`
 - Telemetry (optional): `UsageBeaconUrl`, `UsageBeaconMethod`, `UsageBeaconInstanceId`, `UsageBeaconTimeoutSeconds`

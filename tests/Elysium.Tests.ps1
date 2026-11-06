@@ -181,6 +181,34 @@ Describe 'Update-ElysiumKhdb (incremental sync against a fake S3 store)' {
             '00112233445566778899AABBCCDDEEFF', '00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF')
     }
 
+    It 'keeps one backup by default, honours KhdbBackupCount, and rejects a bad value' {
+        $settingsFile = Join-Path $root 'ElysiumSettings.txt'
+        $original = Get-Content -LiteralPath $settingsFile
+        $backups = { @(Get-ChildItem -LiteralPath $root -Filter 'khdb.txt.bak-*') }
+        $ab = 'ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF'
+        try {
+            (& $backups).Count | Should -Be 1   # left by the previous test's rebuild
+            $previous = Get-Content -LiteralPath $khdb
+            Start-Sleep -Milliseconds 1100      # backup names have 1 s resolution
+            Publish-Shards @{ '00.txt' = @('00112233445566778899AABBCCDDEEFF'); 'ab.txt' = @($ab) }
+            Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
+            $found = & $backups
+            $found.Count | Should -Be 1
+            Get-Content -LiteralPath $found[0].FullName | Should -Be $previous
+
+            Add-Content -LiteralPath $settingsFile -Value 'KhdbBackupCount=0'
+            Publish-Shards @{ '00.txt' = @('00112233445566778899AABBCCDDEEFE'); 'ab.txt' = @($ab) }
+            Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null
+            (& $backups).Count | Should -Be 0
+            Get-Content -LiteralPath $khdb | Should -Be @('00112233445566778899AABBCCDDEEFE', $ab)
+
+            Set-Content -LiteralPath $settingsFile -Value ($original + 'KhdbBackupCount=many')
+            { Update-ElysiumKhdb -MaxParallelTransfers 1 6>$null } | Should -Throw '*KhdbBackupCount*'
+        } finally {
+            Set-Content -LiteralPath $settingsFile -Value $original
+        }
+    }
+
     It 'fails the run and keeps the previous KHDB when a shard does not match its checksum' {
         $before = Get-Content -LiteralPath $khdb
         Publish-Shards @{ '00.txt' = @('00112233445566778899AABBCCDDEEFF'); 'ab.txt' = @('ABFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF') }
