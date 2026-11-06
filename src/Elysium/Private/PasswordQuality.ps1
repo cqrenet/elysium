@@ -312,7 +312,7 @@ function Invoke-WeakPasswordTest {
         $ex = $_.Exception
         $diagLines = [System.Collections.Generic.List[string]]::new()
         $diagLines.Add('========================================')
-        $diagLines.Add('ELYSLUM DCSYNC DIAGNOSTIC DUMP')
+        $diagLines.Add('ELYSIUM DCSYNC DIAGNOSTIC DUMP')
         $diagLines.Add('========================================')
         $diagLines.Add("Timestamp    : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
         $diagLines.Add("Script Ver   : $ElysiumVersion")
