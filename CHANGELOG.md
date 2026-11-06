@@ -8,6 +8,9 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ## [Unreleased]
 
+### Added
+- **`Elysium.ps1` menu:** navigate with Up/Down + Enter, or still type a number directly; Esc/Q exits. Falls back to the old plain numbered prompt when input is redirected or the host has no real console. The keypress logic (`Resolve-ElysiumMenuKeyPress`) is a separate, Pester-tested function.
+
 ### Changed
 - **KHDB backups:** the previous `khdb.txt` is now moved aside instead of copied (instant instead of minutes for a 40+ GB file), and only the newest one is kept. `KhdbBackupCount` in `ElysiumSettings.txt` sets how many (default 1, `0` = none; was a fixed 5).
 

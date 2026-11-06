@@ -293,6 +293,42 @@ Describe 'Update-ElysiumLithnetStore' {
     }
 }
 
+Describe 'Interactive menu keypress logic' {
+    It 'moves the highlight with Up/Down and wraps at both ends' {
+        (Resolve-ElysiumMenuKeyPress -CurrentIndex 1 -ItemCount 3 -Key DownArrow).Index | Should -Be 2
+        (Resolve-ElysiumMenuKeyPress -CurrentIndex 2 -ItemCount 3 -Key DownArrow).Index | Should -Be 0
+        (Resolve-ElysiumMenuKeyPress -CurrentIndex 0 -ItemCount 3 -Key UpArrow).Index | Should -Be 2
+    }
+
+    It 'commits the highlighted item on Enter, without moving it' {
+        $step = Resolve-ElysiumMenuKeyPress -CurrentIndex 2 -ItemCount 6 -Key Enter
+        $step.Index | Should -Be 2
+        $step.Committed | Should -BeTrue
+        $step.Cancelled | Should -BeFalse
+    }
+
+    It 'jumps to and commits an in-range digit, and ignores one past the item count' {
+        $step = Resolve-ElysiumMenuKeyPress -CurrentIndex 0 -ItemCount 6 -Key D4
+        $step.Index | Should -Be 3
+        $step.Committed | Should -BeTrue
+
+        $step = Resolve-ElysiumMenuKeyPress -CurrentIndex 0 -ItemCount 3 -Key D4
+        $step.Index | Should -Be 0
+        $step.Committed | Should -BeFalse
+    }
+
+    It 'cancels on Escape and leaves everything else as a no-op' {
+        $step = Resolve-ElysiumMenuKeyPress -CurrentIndex 1 -ItemCount 6 -Key Escape
+        $step.Cancelled | Should -BeTrue
+        $step.Committed | Should -BeFalse
+
+        $step = Resolve-ElysiumMenuKeyPress -CurrentIndex 1 -ItemCount 6 -Key A
+        $step.Index | Should -Be 1
+        $step.Committed | Should -BeFalse
+        $step.Cancelled | Should -BeFalse
+    }
+}
+
 Describe 'Password-quality helpers' {
     It 'selects a domain by name (case-insensitive) or by prompted number, and rejects bad choices' {
         $domains = Get-DomainDetailsFromSettings -Settings @{
