@@ -6,6 +6,11 @@ Starting with **v2.2.0**, Elysium uses a **unified project version**. All script
 
 ---
 
+## [2.6.1] — 2026-11-16
+
+### Fixed
+- **`Test-WeakADPasswords` aborted on domains with malformed credential-roaming data:** DSInternals parses the credential-roaming blob (the `msPKI*` attributes written by legacy Certificate/Credential Roaming) strictly — the first byte must be `%` — and throws `System.ArgumentOutOfRangeException` ("Value must be equal to %") on any account whose roaming data is corrupt. `Get-ADReplAccount -All` returns a lazy enumerable, so that single bad account aborted the whole replication and no passwords were tested (surfaced as a DCSYNC diagnostic dump). The replication call now requests every account property set except `RoamedCredentials`, which password quality never uses, so the malformed blob is never parsed. No change to results. Falls back to a plain `-All` on DSInternals versions older than 7.x that lack the `-Properties` parameter.
+
 ## [2.6.0] — 2026-11-06
 
 ### Added

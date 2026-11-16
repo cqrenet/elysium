@@ -299,7 +299,22 @@ function Invoke-WeakPasswordTest {
     $resolvedHashFile = $null
     try {
         $resolvedHashFile = Resolve-DSInternalsWeakHashFile -Path $FilePath
-        $accounts = Get-ADReplAccount -All -Server $selectedDomain["DC"] -Credential $credential
+
+        # Request all account properties EXCEPT RoamedCredentials. DSInternals parses the
+        # credential-roaming blob (msPKI* attributes) strictly - the first byte must be '%' -
+        # and throws ArgumentOutOfRangeException ("Value must be equal to %") on any account
+        # whose legacy roaming data is malformed. Because Get-ADReplAccount -All yields a lazy
+        # enumerable, that single bad account aborts the entire replication. Password quality
+        # never uses roamed credentials, so dropping the property set makes the run robust with
+        # no change to results. The -Properties parameter exists since DSInternals 7.x; fall
+        # back to a plain -All on older modules that lack it.
+        $replParams = @{ All = $true; Server = $selectedDomain["DC"]; Credential = $credential }
+        if ((Get-Command Get-ADReplAccount).Parameters.ContainsKey('Properties')) {
+            $allProps = [DSInternals.Common.Data.AccountPropertySets]::All
+            $roamed = [DSInternals.Common.Data.AccountPropertySets]::RoamedCredentials
+            $replParams['Properties'] = $allProps -band (-bnot $roamed)
+        }
+        $accounts = Get-ADReplAccount @replParams
         if ($CheckOnlyEnabledUsers) {
             Write-Verbose "Filtering to only enabled users per settings."
             # Prefer property 'Enabled' if present, fall back gracefully if not
